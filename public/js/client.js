@@ -553,7 +553,7 @@ class SocketClient extends GameClient {
     this.socket = window.io(this.baseUrl, { withCredentials: true });
     const events = [
       'room:state', 'player:joined', 'player:reconnected', 'player:disconnected',
-      'player:ready', 'game:started', 'game:intro', 'game:round', 'game:choice_update',
+      'player:ready', 'game:started', 'game:starting', 'game:intro', 'game:round', 'game:choice_update',
       'game:summary', 'game:next_update', 'game:judging', 'game:ended',
     ];
     events.forEach((event) => this.socket.on(event, (payload) => this.bus.emit(event, payload)));

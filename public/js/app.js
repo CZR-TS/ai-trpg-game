@@ -11,7 +11,7 @@
     admin: { loggedIn: false, worldbooks: [], current: null, rooms: [], history: [], storage: { usedBytes: 0, limitBytes: 200 * 1024 * 1024, fileCount: 0 }, lastRoom: null },
     room: null,            // 房间全量镜像（room:state 推送）
     me: null,              // { role, name }
-    game: { phase: 'intro', intro: null, summary: null, next: { me: false, opp: false } }, // intro | round | summary | judging | ended
+    game: { phase: 'intro', intro: null, summary: null, next: { me: false, opp: false }, starting: false }, // intro | round | summary | judging | ended
     turn: { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, judging: false },
   };
 
@@ -36,13 +36,26 @@
   }
 
   function resetTurn() {
-    state.turn = { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, judging: false };
+    state.turn = { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, judging: false, customText: null };
     typedDone = { narrative: null, summary: null };
   }
+  // ============ 浏览器会话持久化（刷新/重开页面后自动恢复）============
+  const SESSION_KEY = 'trpg_session_v1';
+  function saveSession(roomCode, name) {
+    try { localStorage.setItem(SESSION_KEY, JSON.stringify({ roomCode, name })); } catch {}
+  }
+  function loadSession() {
+    try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch { return null; }
+  }
+  function clearSession() {
+    try { localStorage.removeItem(SESSION_KEY); } catch {}
+  }
+
   async function leaveCurrentRoom() {
     if (state.me) await client.leave();
     state.room = null;
     state.me = null;
+    clearSession();
     resetTurn();
   }
 
@@ -102,10 +115,11 @@
   client.on('connection:error', ({ error }) => UI.toast(error || '连接异常，请稍后重试'));
   client.on('player:joined', () => render());
   client.on('player:ready', () => render());
-  client.on('game:started', () => {});
+  client.on('game:started', () => { state.game.starting = false; });
+  client.on('game:starting', () => { state.game.starting = true; render(); });
   client.on('game:intro', ({ intro, round }) => {
     resetTurn();
-    state.game = { phase: 'intro', intro, summary: null, next: { me: false, opp: false } };
+    state.game = { phase: 'intro', intro, summary: null, next: { me: false, opp: false }, starting: false };
     if (state.view !== 'game') switchView('game'); else render();
   });
   client.on('game:round', (payload) => {
@@ -123,7 +137,7 @@
     state.game.phase = 'summary';
     state.game.summary = payload;
     state.game.next = { me: false, opp: false };
-    render();
+    if (state.view !== 'game') switchView('game'); else render();
   });
   client.on('game:preload_status', ({ status }) => {
     if (state.game.summary) state.game.summary.preloadStatus = status;
@@ -454,6 +468,7 @@
     const res = await client.join({ roomCode, name });
     if (res.ok) {
       state.me = { role: res.role, name };
+      saveSession(roomCode, name);
       resetTurn();
       switchView('lobby');
     } else {
@@ -485,6 +500,16 @@
     UI.clear(acts);
     const myPlayer = state.me && room.players && room.players[state.me.role];
     if (!myPlayer) return;
+    // 房主已点开始、DM 正在生成开场：双方都显示等待，避免对方界面毫无反馈
+    if (state.game.starting) {
+      acts.appendChild(waitLine('DM 正在生成开场信息…'));
+      return;
+    }
+    // 游戏进行中（断线重连过渡，后端会推送 game 事件并自动切到对局界面）
+    if (room.status === 'playing') {
+      acts.appendChild(waitLine('游戏进行中，正在重连…'));
+      return;
+    }
     acts.appendChild(UI.el('button', {
       class: 'btn ' + (myPlayer.ready ? 'btn-ghost' : 'btn-primary') + ' btn-block', type: 'button',
       onclick: () => client.setReady(),
@@ -776,6 +801,7 @@
           type: 'text',
           maxlength: '200',
           placeholder: '输入你想做的任意事…',
+          value: state.turn.submitted ? (state.turn.customText || '') : '',
           disabled: state.turn.submitted,
           onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submitCustomChoice(); } },
         }),
@@ -796,6 +822,7 @@
     const text = (inp && inp.value || '').trim();
     if (!text) { UI.toast('先输入你的行动'); return; }
     state.turn.myChoiceId = text;
+    state.turn.customText = text;
     submitMyChoice();
   }
 
@@ -1037,6 +1064,22 @@
       state.admin.loggedIn = true;
       enterAdminPanel();
     } else {
+      // 检测到上次未结束的对局（localStorage），自动重连恢复进度
+      const sess = loadSession();
+      if (sess && sess.roomCode && sess.name) {
+        $('inp-code').value = sess.roomCode;
+        $('inp-name').value = sess.name;
+        const res = await client.join({ roomCode: sess.roomCode, name: sess.name });
+        if (res && res.ok) {
+          state.me = { role: res.role, name: sess.name };
+          resetTurn();
+          switchView('lobby');
+          UI.refreshIcons();
+          return;
+        }
+        // 房间已结束/不存在：清 session，留在玩家入口
+        clearSession();
+      }
       switchView('player-entry');
     }
     UI.refreshIcons();

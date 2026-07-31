@@ -176,6 +176,8 @@ io.on('connection', (socket) => {
       return ack?.({ ok: false, error: '双方都准备后才能开始' });
     }
     try {
+      // 立即通知双方“开场生成中”，避免房主点开始后对方界面毫无反馈
+      io.to(room.id).emit('game:starting', { code: room.code });
       const node = await game.startRoom(room, config, characterFor(room));
       if (!node) return ack?.({ ok: false, error: '游戏正在处理或已经开始' });
       ack?.({ ok: true });
