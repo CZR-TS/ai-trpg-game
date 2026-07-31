@@ -10,7 +10,7 @@ Group=trpg
 WorkingDirectory=/opt/ai-trpg-game/current
 Environment=NODE_ENV=production
 Environment=TRPG_HOST=0.0.0.0
-Environment=TRPG_PORT=80
+Environment=TRPG_PORT=38571
 ExecStart=/usr/bin/node server/index.js
 Restart=always
 RestartSec=3

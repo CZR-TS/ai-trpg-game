@@ -28,7 +28,7 @@ mv -Tf "$ROOT/current.new" "$ROOT/current"
 systemctl restart ai-trpg-game
 
 for _ in $(seq 1 20); do
-  if curl -fsS http://127.0.0.1/ >/dev/null; then
+  if curl -fsS http://127.0.0.1:38571/ >/dev/null; then
     echo "更新成功：$RELEASE_DIR"
     exit 0
   fi
