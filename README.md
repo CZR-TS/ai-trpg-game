@@ -23,18 +23,25 @@ ai-trpg-game/
 ├── docs/                # 设计文档
 │   └── 方案.md          # 游戏机制与架构方案
 ├── worldbook/           # 世界书（核心：世界观/物品/NPC）
-│   ├── README.md        # 世界书格式说明（必读）
+│   ├── GUIDE.md         # 世界书编写规范指南（编写新世界书必读）
+│   ├── README.md        # 世界书格式说明
 │   ├── schema.json      # 条目 JSON Schema
 │   ├── template.json    # 空模板
 │   └── examples/        # 示例世界书
-│       └── fantasy-example/
-│           ├── worldbook.json
-│           └── dm_character.json
+│       ├── fantasy-example/   # 奇幻示例
+│       └── xuanhuan-example/  # 玄幻示例（202 条，全部机制用法全覆盖）
 ├── server/              # 后端（待实现）
 ├── public/              # 前端（待实现）
 └── config/
     └── config.example.json   # AI 模型配置示例
 ```
+
+## 世界书编写
+
+本项目世界书**兼容 SillyTavern（酒馆）格式**。编写新世界书前，请务必阅读：
+- **[worldbook/GUIDE.md](worldbook/GUIDE.md)** —— 世界书编写规范指南（字段要求、触发机制、关键词治理、递归防爆、随机事件、group 用法等）
+- **[worldbook/README.md](worldbook/README.md)** —— 世界书 JSON 格式说明
+- 完整示例见 `worldbook/examples/xuanhuan-example/worldbook.json`
 
 ## 快速开始（待实现）
 
