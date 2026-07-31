@@ -283,6 +283,59 @@ input { font-family: inherit; }
 .progress.storage-warning .progress-fill { opacity: 0.72; }
 .progress.storage-danger .progress-fill { opacity: 0.5; }
 
+/* ---------- 实时在线面板 ---------- */
+.online-panel { margin-bottom: var(--sp-6); }
+.online-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.online-count.has-online { color: #0a7a3d; border-color: rgba(10, 122, 61, 0.35); background: rgba(10, 122, 61, 0.06); }
+.online-list { display: grid; grid-template-columns: 1fr; gap: var(--sp-3); }
+@media (min-width: 860px) { .online-list { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); } }
+.online-card {
+  padding: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.online-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+.online-card-head svg { width: 14px; height: 14px; color: var(--muted); }
+.online-card-head .code-chip { font-size: 12px; }
+.online-pair { display: flex; flex-direction: column; gap: var(--sp-2); }
+.online-player {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.online-player svg { width: 14px; height: 14px; color: #0a7a3d; margin-left: auto; }
+.online-role {
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  background: var(--primary, #4f46e5);
+}
+.online-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* 世界书项 */
 .wb-item {
   display: flex;

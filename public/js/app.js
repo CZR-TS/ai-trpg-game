@@ -8,7 +8,7 @@
 
   const state = {
     view: 'admin-login',   // admin-login | admin-panel | player-entry | lobby | game | ending
-    admin: { loggedIn: false, worldbooks: [], current: null, rooms: [], history: [], storage: { usedBytes: 0, limitBytes: 200 * 1024 * 1024, fileCount: 0 }, lastRoom: null },
+    admin: { loggedIn: false, worldbooks: [], current: null, rooms: [], history: [], storage: { usedBytes: 0, limitBytes: 200 * 1024 * 1024, fileCount: 0 }, lastRoom: null, online: { count: 0, rooms: [] } },
     room: null,            // 房间全量镜像（room:state 推送）
     me: null,              // { role, name }
     game: { phase: 'intro', intro: null, summary: null, next: { me: false, opp: false }, starting: false }, // intro | round | summary | judging | ended
@@ -203,7 +203,25 @@
     state.admin.worldbooks = wb.worldbooks || [];
     state.admin.current = wb.current;
     await refreshRooms();
+    await refreshOnline();
     render();
+    startOnlinePolling();
+  }
+
+  // 实时在线：每 5 秒轮询一次（后台仅管理员可见，无需实时推送）
+  let onlineTimer = null;
+  function startOnlinePolling() {
+    stopOnlinePolling();
+    onlineTimer = setInterval(async () => { await refreshOnline(); }, 5000);
+  }
+  function stopOnlinePolling() {
+    if (onlineTimer) { clearInterval(onlineTimer); onlineTimer = null; }
+  }
+
+  async function refreshOnline() {
+    const r = await adminCall(() => client.listOnline());
+    if (r && r.count !== undefined) state.admin.online = r;
+    if (state.view === 'admin-panel') render();
   }
 
   async function refreshRooms() {
@@ -217,6 +235,8 @@
   }
 
   function renderAdminPanel() {
+    renderOnlinePanel();
+
     // 世界书列表
     const wbList = $('wb-list');
     UI.clear(wbList);
@@ -361,6 +381,43 @@
     UI.toast('历史记录已删除');
   }
 
+  // ---- 实时在线面板：按房间成对显示在线玩家 ----
+  function renderOnlinePanel() {
+    const box = $('online-list');
+    const hint = $('online-hint');
+    const countEl = $('online-count');
+    if (!box || !countEl) return;
+    UI.clear(box);
+    const online = state.admin.online || { count: 0, rooms: [] };
+    const pairs = online.rooms || [];
+    countEl.textContent = pairs.length ? `在线 ${online.count} 人 / ${pairs.length} 房` : '在线 0 人';
+    countEl.className = 'online-count' + (online.count ? ' has-online' : '');
+    countEl.hidden = false;
+    if (!pairs.length) {
+      hint.textContent = '当前没有玩家在线，玩家加入房间后会出现在这里。';
+      hint.hidden = false;
+      return;
+    }
+    hint.hidden = true;
+    pairs.forEach((pair) => {
+      const card = UI.el('div', { class: 'online-card' }, [
+        UI.el('div', { class: 'online-card-head' }, [
+          UI.icon('door-open'),
+          UI.el('code', { class: 'code-chip', text: pair.code }),
+          UI.el('span', { class: 'badge ' + pair.status, text: { lobby: '等待中', waiting: '等待中', playing: '进行中', judging: '判定中', ended: '已结束' }[pair.status] || pair.status }),
+        ]),
+        UI.el('div', { class: 'online-pair' }, pair.players.map((p) =>
+          UI.el('div', { class: 'online-player' }, [
+            UI.el('span', { class: 'online-role', text: p.role }),
+            UI.el('span', { class: 'online-name', text: p.name }),
+            UI.icon('user-check'),
+          ])
+        )),
+      ]);
+      box.appendChild(card);
+    });
+  }
+
   function playerLine(p) {
     if (!p) return '—';
     return p.name + (p.ready ? ' ✓已准备' : ' 未准备');
@@ -450,11 +507,13 @@
     if (action === 'admin-logout') {
       await client.logout();
       state.admin.loggedIn = false;
+      stopOnlinePolling();
       UI.toast('已退出登录');
       switchView('player-entry');
     }
     if (action === 'create-room') createRoom();
     if (action === 'room-refresh') { await refreshRooms(); render(); }
+    if (action === 'online-refresh') { await refreshOnline(); render(); }
   });
 
   // ============ 3. 玩家入口 ============

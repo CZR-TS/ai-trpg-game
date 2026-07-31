@@ -62,6 +62,23 @@ export function createAdminRouter() {
     res.json({ rooms: list });
   });
 
+  // 实时在线玩家：按房间成对返回（sockId 非空即在线）
+  router.get('/online', (req, res) => {
+    const roomsList = [...rooms.values()]
+      .filter((r) => r.status !== 'ended')
+      .map((r) => ({
+        code: r.code,
+        status: r.status,
+        worldbookId: r.worldbookId,
+        players: ['A', 'B']
+          .map((role) => (r.players[role] && r.players[role].sockId ? { role, name: r.players[role].name } : null))
+          .filter(Boolean),
+      }))
+      .filter((r) => r.players.length > 0);
+    const count = roomsList.reduce((sum, r) => sum + r.players.length, 0);
+    res.json({ count, rooms: roomsList, updatedAt: Date.now() });
+  });
+
   // 历史记录（磁盘持久化，服务重启不丢失）
   router.get('/rooms/history', (req, res) => {
     res.json({ history: listRoomHistory(), storage: roomHistoryStorage() });

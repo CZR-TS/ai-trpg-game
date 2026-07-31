@@ -590,6 +590,7 @@ class SocketClient extends GameClient {
   async selectWorldbook(id) { return this._req('POST', '/api/admin/worldbooks/' + encodeURIComponent(id) + '/select'); }
   async createRoom(payload) { return this._req('POST', '/api/admin/rooms', payload || {}); }
   async listRooms() { return this._req('GET', '/api/admin/rooms'); }
+  async listOnline() { return this._req('GET', '/api/admin/online'); }
   async listRoomHistory() { return this._req('GET', '/api/admin/rooms/history'); }
   async deleteRoomHistory(id) { return this._req('DELETE', '/api/admin/rooms/history/' + encodeURIComponent(id)); }
   async getRoom(id) { return this._req('GET', '/api/admin/rooms/' + encodeURIComponent(id)); }
