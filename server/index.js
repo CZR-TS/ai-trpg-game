@@ -67,16 +67,33 @@ function endingPayload(room, summary) {
   };
 }
 
+function playerRoomView(room, viewerRole) {
+  const view = game.publicRoomView(room);
+  if (view.currentNode) view.currentNode.story_state = game.playerStoryStateView(view.currentNode.story_state, viewerRole);
+  return view;
+}
+
+function emitPlayerEvent(room, event, payloadForRole) {
+  for (const role of ['A', 'B']) {
+    const socketId = room.players[role]?.sockId;
+    if (socketId) io.to(socketId).emit(event, payloadForRole(role));
+  }
+}
+
+function emitRoomState(room) {
+  emitPlayerEvent(room, 'room:state', (role) => ({ room: playerRoomView(room, role) }));
+}
+
 function maybePreloadOpening(room) {
   if (room.status !== 'waiting' || !room.players.A || !room.players.B) return;
   if (room.openingStatus !== 'idle' && room.openingStatus !== 'failed') return;
   const pending = game.preloadOpening(room, config, characterFor(room));
-  io.to(room.id).emit('room:state', { room: game.publicRoomView(room) });
+  emitRoomState(room);
   pending.then(() => {
-    io.to(room.id).emit('room:state', { room: game.publicRoomView(room) });
+    emitRoomState(room);
   }).catch((error) => {
     console.warn('[GAME] 开场预加载失败：', errorMessage(error));
-    io.to(room.id).emit('room:state', { room: game.publicRoomView(room) });
+    emitRoomState(room);
   });
 }
 
@@ -84,9 +101,9 @@ io.on('connection', (socket) => {
   socket.on('room:join', (payload, ack) => {
     try {
       if (socket.data.roomId) throw new Error('当前连接已经加入房间');
-      const { roomCode, name, playerToken } = payload || {};
+      const { roomCode, name } = payload || {};
       if (!roomCode) throw new Error('缺少房间码');
-      const joined = game.joinRoom(roomCode, name, playerToken);
+      const joined = game.joinRoom(roomCode, name);
       const { room, role } = joined;
       const previousSocketId = room.players[role].sockId;
       if (previousSocketId && previousSocketId !== socket.id) {
@@ -101,18 +118,17 @@ io.on('connection', (socket) => {
         ok: true,
         roomId: room.id,
         role,
-        playerToken: joined.playerToken,
         reconnected: joined.reconnected,
       });
       io.to(room.id).emit(joined.reconnected ? 'player:reconnected' : 'player:joined', {
         role,
         name: room.players[role].name,
       });
-      io.to(room.id).emit('room:state', { room: game.publicRoomView(room) });
+      emitRoomState(room);
       if (joined.reconnected && room.status === 'playing') {
         if (room.phase === 'intro') socket.emit('game:intro', introView(room, room.currentNode));
-        else if (room.phase === 'summary') socket.emit('game:summary', summaryView(room));
-        else if (room.phase === 'round') socket.emit('game:round', nodeView(room, room.currentNode));
+        else if (room.phase === 'summary') socket.emit('game:summary', summaryView(room, role));
+        else if (room.phase === 'round') socket.emit('game:round', nodeView(room, room.currentNode, role));
       }
       if (joined.reconnected && room.status === 'ended') {
         socket.emit('game:ended', endingPayload(room));
@@ -129,7 +145,7 @@ io.on('connection', (socket) => {
     if (room.status !== 'waiting' || room.processing) return ack?.({ ok: false, error: '当前不能更改准备状态' });
     room.players[role].ready = !room.players[role].ready;
     io.to(room.id).emit('player:ready', { role, ready: room.players[role].ready });
-    io.to(room.id).emit('room:state', { room: game.publicRoomView(room) });
+    emitRoomState(room);
     ack?.({ ok: true, ready: room.players[role].ready });
   });
 
@@ -149,7 +165,7 @@ io.on('connection', (socket) => {
     }
     socket.data.roomId = null;
     socket.data.role = null;
-    io.to(room.id).emit('room:state', { room: game.publicRoomView(room) });
+    emitRoomState(room);
     ack?.({ ok: true, reconnectable });
   });
   socket.on('game:start', async (payload, ack) => {
@@ -168,7 +184,7 @@ io.on('connection', (socket) => {
     } catch (error) {
       console.error('[GAME] 开局失败：', error);
       ack?.({ ok: false, error: '开局失败，请重试' });
-      io.to(room.id).emit('room:state', { room: game.publicRoomView(room) });
+      emitRoomState(room);
     }
   });
 
@@ -208,7 +224,12 @@ io.on('connection', (socket) => {
       if (result.type === 'ended') {
         io.to(room.id).emit('game:ended', endingPayload(room, result.summary));
       } else {
-        io.to(room.id).emit('game:summary', summaryView(room));
+        emitPlayerEvent(room, 'game:summary', (role) => summaryView(room, role));
+        game.preloadNextRound(room, config, characterFor(room)).then((node) => {
+          if (node && room.status === 'playing' && room.phase === 'summary') {
+            emitPlayerEvent(room, 'game:preload_status', () => ({ status: room.nextRoundStatus }));
+          }
+        });
       }
     } catch (error) {
       console.error('[GAME] 推进失败：', error);
@@ -232,7 +253,7 @@ io.on('connection', (socket) => {
       const result = await game.proceedNext(room, config, characterFor(room));
       if (!result) return ack?.({ ok: false, error: '推进失败，请重试' });
       if (result.type === 'round') {
-        io.to(room.id).emit('game:round', nodeView(room, result.node));
+        emitPlayerEvent(room, 'game:round', (role) => nodeView(room, result.node, role));
       }
       ack?.({ ok: true });
     } catch (error) {
@@ -251,24 +272,24 @@ io.on('connection', (socket) => {
         // 游戏未开始：直接释放座位，其他人可重新加入
         room.players[role] = null;
         io.to(room.id).emit('player:left', { role });
-        io.to(room.id).emit('room:state', { room: game.publicRoomView(room) });
+        emitRoomState(room);
         return;
       }
       room.players[role].sockId = null;
       io.to(room.id).emit('player:disconnected', { role });
-      io.to(room.id).emit('room:state', { room: game.publicRoomView(room) });
+      emitRoomState(room);
     }
   });
 });
 
-function nodeView(room, node) {
+function nodeView(room, node, viewerRole) {
   return {
     round: room.round,
     narrative: node.narrative,
     choices_A: node.choices_A,
     choices_B: node.choices_B,
     reveal: node.reveal,
-    story_state: node.story_state,
+    story_state: game.playerStoryStateView(node.story_state, viewerRole),
     progress: room.progress,
   };
 }
@@ -287,15 +308,17 @@ function introView(room, node) {
   };
 }
 
-function summaryView(room) {
+function summaryView(room, viewerRole) {
   const s = room.currentSummary || {};
   return {
     round: s.round ?? room.round,
     summary: s.summary || '（本回合没有新的变化）',
-    storyState: s.storyState || {},
+    storyState: game.playerStoryStateView(s.storyState || {}, viewerRole),
     progress: room.progress,
     choiceA: s.choiceA ?? null,
     choiceB: s.choiceB ?? null,
+    playerNames: { A: room.players.A?.name || '玩家 A', B: room.players.B?.name || '玩家 B' },
+    preloadStatus: room.nextRoundStatus,
   };
 }
 

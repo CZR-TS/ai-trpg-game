@@ -17,6 +17,7 @@ export const worldbooks = new Map();
 
 const WB_DIR = path.join(process.cwd(), 'data', 'worldbooks');
 const HISTORY_DIR = path.join(process.cwd(), 'data', 'room-history');
+export const ROOM_HISTORY_LIMIT_BYTES = 200 * 1024 * 1024;
 const VALID_WORLDBOOK_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const VALID_ROOM_CODE = /^[A-Z2-9]{4,16}$/;
 
@@ -149,6 +150,9 @@ export function createRoom({ worldbookId, code, roomCodeLen = 8 }) {
     openingNode: null,
     openingPromise: null,
     openingStatus: 'idle',
+    nextRoundNode: null,
+    nextRoundPromise: null,
+    nextRoundStatus: 'idle',
     history: [],
     processing: false,
     ending: null,
@@ -163,48 +167,25 @@ export function findRoomByCode(code) {
   return [...rooms.values()].find((r) => r.code === c && r.status !== 'ended');
 }
 
-export function joinRoom(code, name, playerToken) {
+export function joinRoom(code, name) {
   const room = findRoomByCode(code);
   if (!room) throw new Error('房间不存在或已结束');
 
   const safeName = typeof name === 'string' ? name.trim() : '';
   if (!safeName || safeName.length > 32) throw new Error('昵称长度必须为 1-32');
 
-  if (playerToken) {
-    const role = ['A', 'B'].find((r) => room.players[r]?.token === playerToken);
-    if (role) {
-      const nextToken = crypto.randomBytes(24).toString('base64url');
-      room.players[role].token = nextToken;
-      return { room, role, playerToken: nextToken, reconnected: true };
-    }
-  }
-
-  // 页面刷新或更换浏览器后令牌可能丢失；允许用房间码 + 原昵称认领离线席位。
-  const sameNameRole = ['A', 'B'].find((role) => {
-    const player = room.players[role];
-    return player && !player.sockId && player.name === safeName;
-  });
+  // 小规模双人房：房间码 + 完全相同的昵称就是身份；只有离线席位可被认领。
+  const sameNameRole = ['A', 'B'].find((role) => room.players[role]?.name === safeName);
   if (sameNameRole) {
-    const nextToken = crypto.randomBytes(24).toString('base64url');
-    room.players[sameNameRole].token = nextToken;
-    return {
-      room,
-      role: sameNameRole,
-      playerToken: nextToken,
-      reconnected: true,
-    };
+    if (room.players[sameNameRole].sockId) throw new Error('该昵称当前在线，不能重复进入');
+    return { room, role: sameNameRole, reconnected: true };
   }
 
-  if (room.status !== 'waiting') throw new Error('游戏已开始，仅原玩家可重连');
-  if (['A', 'B'].some((role) => room.players[role]?.name === safeName)) {
-    throw new Error('该昵称已在房间中');
-  }
-  // 空位优先；游戏未开始时，被离线玩家（无 socket 连接）占用的座位可被重新加入
-  const role = !room.players.A || !room.players.A.sockId ? 'A' : !room.players.B || !room.players.B.sockId ? 'B' : null;
+  if (room.status !== 'waiting') throw new Error('游戏已开始，请使用原玩家昵称重连');
+  const role = !room.players.A ? 'A' : !room.players.B ? 'B' : null;
   if (!role) throw new Error('房间已满');
-  const token = crypto.randomBytes(24).toString('base64url');
-  room.players[role] = { name: safeName, ready: false, sockId: null, token };
-  return { room, role, playerToken: token, reconnected: false };
+  room.players[role] = { name: safeName, ready: false, sockId: null };
+  return { room, role, reconnected: false };
 }
 
 /** 保存房间历史到磁盘（结束/关闭时调用，服务重启不丢失） */
@@ -245,13 +226,96 @@ export function listRoomHistory() {
     .filter((f) => f.endsWith('.json'))
     .map((f) => {
       try {
-        return JSON.parse(fs.readFileSync(path.join(HISTORY_DIR, f), 'utf8'));
+        const filePath = path.join(HISTORY_DIR, f);
+        const record = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        return { ...record, fileBytes: fs.statSync(filePath).size };
       } catch {
         return null;
       }
     })
     .filter(Boolean)
     .sort((a, b) => (b.endedAt || 0) - (a.endedAt || 0));
+}
+
+export function roomHistoryStorage() {
+  let usedBytes = 0;
+  let fileCount = 0;
+  if (fs.existsSync(HISTORY_DIR)) {
+    for (const file of fs.readdirSync(HISTORY_DIR)) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        usedBytes += fs.statSync(path.join(HISTORY_DIR, file)).size;
+        fileCount += 1;
+      } catch {}
+    }
+  }
+  return { usedBytes, limitBytes: ROOM_HISTORY_LIMIT_BYTES, fileCount };
+}
+
+/** 只按记录内部 id 定位并删除历史 JSON，绝不拼接用户输入为文件路径。 */
+export function deleteRoomHistory(id) {
+  const safeId = typeof id === 'string' ? id.trim() : '';
+  if (!safeId || !fs.existsSync(HISTORY_DIR)) return false;
+  for (const file of fs.readdirSync(HISTORY_DIR)) {
+    if (!file.endsWith('.json')) continue;
+    const filePath = path.join(HISTORY_DIR, file);
+    try {
+      const record = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (record.id !== safeId) continue;
+      fs.unlinkSync(filePath);
+      return true;
+    } catch {}
+  }
+  return false;
+}
+
+export function organizeStoryState(storyState, players = {}) {
+  const source = storyState && !Array.isArray(storyState) && typeof storyState === 'object' ? storyState : {};
+  const a = source.A && !Array.isArray(source.A) && typeof source.A === 'object' ? { ...source.A } : {};
+  const b = source.B && !Array.isArray(source.B) && typeof source.B === 'object' ? { ...source.B } : {};
+  const sharedSource = source.shared || source.共同 || source.公共;
+  const shared = sharedSource && !Array.isArray(sharedSource) && typeof sharedSource === 'object' ? { ...sharedSource } : {};
+  const sharedKeys = new Set(['位置', 'location', '场景', 'scene', '时间', 'time', '天气', 'weather', '共同目标', '队伍目标', 'team_goal', '共享物品', 'shared_inventory']);
+  for (const key of sharedKeys) {
+    if (key in a && key in b && JSON.stringify(a[key]) === JSON.stringify(b[key])) {
+      if (!(key in shared)) shared[key] = a[key];
+      delete a[key];
+      delete b[key];
+    }
+  }
+  a.name = players.A?.name || a.name || '玩家 A';
+  b.name = players.B?.name || b.name || '玩家 B';
+  return { ...source, A: a, B: b, shared };
+}
+
+const OPPONENT_PUBLIC_STATE_KEYS = new Set([
+  'name', 'hp', 'health', 'status', 'condition', 'location', 'position', 'alignment', 'level', 'class',
+  '生命', '生命值', '状态', '位置', '阵营', '等级', '职业', '境界', '外观',
+]);
+
+function visiblePlayerState(player, own) {
+  if (!player || Array.isArray(player) || typeof player !== 'object') return {};
+  const result = {};
+  const publicPart = player._public || player.public || player.公开;
+  const privatePart = player._private || player.private || player.私密;
+  for (const [key, value] of Object.entries(player)) {
+    if (key === '_public' || key === 'public' || key === '公开' || key === '_private' || key === 'private' || key === '私密') continue;
+    if (/^_?flags?(?:_|$)/i.test(key)) continue;
+    if (own || OPPONENT_PUBLIC_STATE_KEYS.has(key)) result[key] = value;
+  }
+  if (publicPart && !Array.isArray(publicPart) && typeof publicPart === 'object') Object.assign(result, publicPart);
+  if (own && privatePart && !Array.isArray(privatePart) && typeof privatePart === 'object') Object.assign(result, privatePart);
+  return result;
+}
+
+export function playerStoryStateView(storyState, viewerRole) {
+  const source = storyState && !Array.isArray(storyState) && typeof storyState === 'object' ? storyState : {};
+  const shared = source.shared && !Array.isArray(source.shared) && typeof source.shared === 'object' ? source.shared : {};
+  return {
+    A: visiblePlayerState(source.A, viewerRole === 'A'),
+    B: visiblePlayerState(source.B, viewerRole === 'B'),
+    shared,
+  };
 }
 
 /** 推送给玩家的房间视图 */
@@ -381,6 +445,7 @@ export async function advanceRoom(room, config, charCard) {
       };
     }
     room.phase = 'summary';
+    preloadNextRound(room, config, charCard);
     return {
       type: 'summary',
       summary: node.summary,
@@ -400,6 +465,31 @@ export function confirmNext(room, role) {
   return !!(room.nextConfirm.A && room.nextConfirm.B);
 }
 
+/** 反馈页出现后立即后台生成下一轮；玩家是否点击“下一步”不影响预加载。 */
+export function preloadNextRound(room, config, charCard) {
+  if (room.status !== 'playing' || room.phase !== 'summary') return Promise.resolve(room.nextRoundNode);
+  if (room.nextRoundNode) return Promise.resolve(room.nextRoundNode);
+  if (room.nextRoundPromise) return room.nextRoundPromise;
+  const sourceRound = room.round;
+  room.nextRoundStatus = 'loading';
+  room.nextRoundPromise = generateNode(room, config, charCard, {
+    kind: 'round',
+    history: [...room.history],
+    summary: room.currentSummary?.summary,
+  }).then((node) => {
+    if (room.status === 'playing' && room.phase === 'summary' && room.round === sourceRound) {
+      room.nextRoundNode = node;
+      room.nextRoundStatus = 'ready';
+    }
+    return node;
+  }).catch((error) => {
+    room.nextRoundStatus = 'failed';
+    console.warn('[GAME] 下一回合预加载失败：', error instanceof Error ? error.message : error);
+    return null;
+  }).finally(() => { room.nextRoundPromise = null; });
+  return room.nextRoundPromise;
+}
+
 /** 双方确认后推进：intro → 首轮 round；summary → 生成下一轮 round */
 export async function proceedNext(room, config, charCard) {
   if (room.status !== 'playing' || room.processing) return null;
@@ -410,11 +500,10 @@ export async function proceedNext(room, config, charCard) {
       return { type: 'round', node: room.currentNode };
     }
     if (room.phase === 'summary') {
-      const node = await generateNode(room, config, charCard, {
-        kind: 'round',
-        history: room.history,
-        summary: room.currentSummary?.summary,
-      });
+      const node = room.nextRoundNode || await preloadNextRound(room, config, charCard);
+      if (!node) return null;
+      room.nextRoundNode = null;
+      room.nextRoundStatus = 'used';
       room.round += 1;
       room.progress = Math.max(room.progress, node.progress);
       room.currentNode = node;
@@ -458,6 +547,7 @@ async function generateNode(room, config, charCard, { kind, history, choiceA, ch
   const system = buildSystemPrompt(charCard);
   const user = [
     loreText,
+    `【玩家身份】玩家A真实昵称：${room.players.A?.name || '玩家A'}；玩家B真实昵称：${room.players.B?.name || '玩家B'}。必须始终使用这两个昵称。`,
     '【剧情历史】\n' + buildHistoryText(history, config.game.historyRounds),
     '【当前结构化状态】\n' + JSON.stringify(room.storyState || {}),
     `【当前进度】${Math.round(room.progress * 100)}%`,
@@ -505,6 +595,7 @@ async function generateNode(room, config, charCard, { kind, history, choiceA, ch
     storyState: room.storyState,
     summary: kind === 'summary' ? '（演示模式）本回合尘埃落定，两位玩家的选择带来了新的变数。' : null,
   });
+  node.story_state = organizeStoryState(node.story_state, room.players);
   if (!parsed) node.progress = Math.min(1, room.progress + 0.25);
   else node.progress = Math.max(room.progress, node.progress);
   return node;

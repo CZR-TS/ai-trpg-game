@@ -268,6 +268,20 @@ input { font-family: inherit; }
 .history-head h3 { display: inline-flex; align-items: center; gap: var(--sp-2); margin: 0; font-size: 14px; }
 .history-head h3 svg { width: 15px; height: 15px; }
 .history-head > span { color: var(--muted); font-size: 12px; }
+.history-storage {
+  padding: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.history-storage-row { display: flex; justify-content: space-between; gap: var(--sp-3); margin-bottom: var(--sp-2); font-size: 12px; }
+.history-storage-row b { font-weight: 600; text-align: right; }
+.history-storage .hint { margin: var(--sp-2) 0 0; }
+.history-actions { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.history-delete { width: 28px; height: 28px; }
+.progress.storage-warning .progress-fill { opacity: 0.72; }
+.progress.storage-danger .progress-fill { opacity: 0.5; }
 
 /* 世界书项 */
 .wb-item {
@@ -370,6 +384,20 @@ input { font-family: inherit; }
   color: var(--muted);
   margin-top: var(--sp-2);
 }
+.lobby-waiting {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  min-height: 44px;
+  padding: var(--sp-3);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: 13px;
+  background: var(--surface);
+}
+.lobby-waiting svg { width: 15px; height: 15px; }
 .seats {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -531,9 +559,22 @@ input { font-family: inherit; }
   width: 100%;
 }
 button.choice-item:hover:not(:disabled) { border-color: var(--fg); background: var(--hover); }
-.choice-item .choice-text { flex: 1; }
+.choice-item .choice-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.choice-item .choice-text { flex: 1; overflow-wrap: anywhere; }
 .choice-item .choice-mark { width: 16px; height: 16px; color: var(--muted); flex-shrink: 0; }
 .choice-item.selected { border-color: var(--fg); background: var(--surface); }
+.choice-item.selected .choice-index { background: var(--fg); color: var(--bg); }
 .choice-item.selected .choice-mark { color: var(--fg); }
 .choice-item:disabled { cursor: default; opacity: 0.65; }
 .choice-item.opponent-pick { border-color: var(--fg); }
@@ -564,23 +605,34 @@ button.choice-item:hover:not(:disabled) { border-color: var(--fg); background: v
 @media (max-width: 899px) { .status-panel { order: -1; } }
 @media (min-width: 900px) { .status-panel { position: sticky; top: 80px; } }
 .status-row { display: flex; flex-direction: column; gap: var(--sp-2); } /* 每个玩家一行，更清晰 */
+.shared-status-card { border: 1px solid var(--fg); border-radius: var(--radius-lg); padding: var(--sp-3); background: var(--bg); }
+.shared-status-head { display: flex; align-items: center; gap: 6px; margin-bottom: var(--sp-3); font-size: 12px; }
+.shared-status-head svg { width: 14px; height: 14px; }
+.shared-status-card .sc-stat { background: var(--surface); }
 .status-chip {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
+  display: block;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-3);
   font-size: 14px;
   background: var(--bg);
   min-width: 0;
 }
 .status-chip.me { background: var(--surface); }
 .status-chip svg { width: 13px; height: 13px; color: var(--muted); flex-shrink: 0; }
-.sc-name { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.status-chip-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+.sc-name { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
 .sc-name b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.sc-stat { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); }
-.sc-stat svg { width: 12px; height: 12px; }
+.status-role { border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.status-role.me { border-color: var(--fg); color: var(--fg); }
+.status-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--sp-2); }
+.sc-stat { display: flex; align-items: flex-start; gap: 6px; min-width: 0; padding: 7px 8px; border-radius: var(--radius); background: var(--bg); }
+.status-chip:not(.me) .sc-stat { background: var(--surface); }
+.sc-stat.wide { grid-column: 1 / -1; }
+.sc-stat svg { width: 13px; height: 13px; margin-top: 2px; }
+.sc-stat-copy { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.sc-stat-copy small { color: var(--muted); font-size: 10px; }
+.sc-stat-copy strong { color: var(--fg); font-size: 12px; font-weight: 500; overflow-wrap: anywhere; }
 .sc-align { margin-left: auto; color: var(--muted); flex-shrink: 0; }
 
 /* 对方状态行（一行提示，不陈列对方选项） */
@@ -657,6 +709,9 @@ button.choice-item:hover:not(:disabled) { border-color: var(--fg); background: v
 .info-role-card svg { width: 16px; height: 16px; margin-bottom: var(--sp-2); }
 .info-role-card b { display: block; font-size: 13px; margin-bottom: var(--sp-2); }
 .info-role-card p { margin: 0; font-size: 13px; line-height: 1.7; color: var(--muted); }
+.round-preload-status { display: flex; align-items: center; justify-content: center; gap: var(--sp-2); margin-top: var(--sp-4); padding: var(--sp-2) var(--sp-3); border: 1px dashed var(--border); border-radius: var(--radius); color: var(--muted); font-size: 12px; background: var(--surface); }
+.round-preload-status.ready { border-style: solid; color: var(--fg); }
+.round-preload-status svg { width: 14px; height: 14px; }
 .reveal-box { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); margin-bottom: var(--sp-4); }
 @media (max-width: 480px) { .reveal-box { grid-template-columns: 1fr; } }
 .reveal-item { border: 1px solid var(--border); border-radius: var(--radius); padding: var(--sp-3); }
@@ -862,6 +917,14 @@ button.choice-item:hover:not(:disabled) { border-color: var(--fg); background: v
   .narrative-text { font-size: 14.5px; }
   .game-top { gap: var(--sp-2); }
   .seats { gap: var(--sp-2); }
+  .game-sheet { padding-left: var(--sp-3); padding-right: var(--sp-3); }
+  .game-body { gap: var(--sp-4); margin-top: var(--sp-4); }
+  .status-row { gap: var(--sp-3); }
+  .status-chip { border-radius: var(--radius-lg); padding: var(--sp-3); }
+  .narrative { padding: var(--sp-4); }
+  .choice-block { padding: var(--sp-3); }
+  .choice-item { align-items: flex-start; padding: var(--sp-3); }
+  .choice-item .choice-mark { margin-top: 3px; }
 }
 
 /* prefers-reduced-motion 兜底 */

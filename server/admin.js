@@ -1,7 +1,7 @@
 import express from 'express';
 import {
   listWorldbooks, importWorldbook, createRoom, rooms, getWorldbook,
-  listRoomHistory, saveRoomHistory,
+  listRoomHistory, saveRoomHistory, roomHistoryStorage, deleteRoomHistory,
 } from './game.js';
 import { config, saveConfig } from './config.js';
 
@@ -64,7 +64,12 @@ export function createAdminRouter() {
 
   // 历史记录（磁盘持久化，服务重启不丢失）
   router.get('/rooms/history', (req, res) => {
-    res.json({ history: listRoomHistory() });
+    res.json({ history: listRoomHistory(), storage: roomHistoryStorage() });
+  });
+
+  router.delete('/rooms/history/:id', (req, res) => {
+    if (!deleteRoomHistory(req.params.id)) return res.status(404).json({ error: '历史记录不存在' });
+    res.json({ ok: true, storage: roomHistoryStorage() });
   });
 
   router.get('/rooms/:id', (req, res) => {

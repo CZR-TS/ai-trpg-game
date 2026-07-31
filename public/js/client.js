@@ -45,7 +45,8 @@ class GameClient {
   async selectWorldbook(id) {}           // POST /api/admin/worldbooks/:id/select → {ok,current}
   async createRoom(payload) {}           // POST /api/admin/rooms           {worldbookId?} → {roomId,code}
   async listRooms() {}                   // GET  /api/admin/rooms           → {rooms:[{id,code,status,round,progress,worldbookId,players}]}
-  async listRoomHistory() {}             // GET  /api/admin/rooms/history   → {history:[...]}
+  async listRoomHistory() {}             // GET  /api/admin/rooms/history   → {history:[...],storage:{usedBytes,limitBytes}}
+  async deleteRoomHistory(id) {}         // DELETE /api/admin/rooms/history/:id
   async getRoom(id) {}                   // GET  /api/admin/rooms/:id       → {room}（含 history/ending）
   async closeRoom(id) {}                 // POST /api/admin/rooms/:id/close → {ok}
   // ---- Socket（玩家）----
@@ -162,7 +163,15 @@ class MockClient extends GameClient {
       .filter((room) => room.status === 'ended')
       .sort((a, b) => b.createdAt - a.createdAt)
       .map((room) => ({ ...this._publicRoom(room), endedAt: room.endedAt || room.createdAt }));
-    return { history };
+    const usedBytes = new Blob([JSON.stringify(history)]).size;
+    return { history, storage: { usedBytes, limitBytes: 200 * 1024 * 1024, fileCount: history.length } };
+  }
+  async deleteRoomHistory(id) {
+    await delay(120);
+    const g = this._guardAdmin(); if (g) return g;
+    if (!this.rooms[id] || this.rooms[id].status !== 'ended') return { ok: false, error: '历史记录不存在', status: 404 };
+    delete this.rooms[id];
+    return { ok: true };
   }
   async getRoom(id) {
     await delay(120);
@@ -531,29 +540,8 @@ class SocketClient extends GameClient {
     this.baseUrl = opts.baseUrl || '';
     this.bus = new EventBus();
     this.socket = null;
-    this.storageKey = 'trpg-player-session-v1';
-    const saved = this._loadSession();
-    this.lastJoin = saved ? { roomCode: saved.roomCode, name: saved.name } : null;
-    this.playerToken = saved?.playerToken || null;
-    this.needsReconnect = false;
-  }
-
-  _loadSession() {
-    try {
-      const value = JSON.parse(localStorage.getItem(this.storageKey) || 'null');
-      return value?.roomCode && value?.name && value?.playerToken ? value : null;
-    } catch { return null; }
-  }
-
-  _saveSession() {
-    if (!this.lastJoin || !this.playerToken) return;
-    try { localStorage.setItem(this.storageKey, JSON.stringify({ ...this.lastJoin, playerToken: this.playerToken })); } catch {}
-  }
-
-  _clearSession() {
     this.lastJoin = null;
-    this.playerToken = null;
-    try { localStorage.removeItem(this.storageKey); } catch {}
+    this.needsReconnect = false;
   }
 
   on(e, cb) { this._connect(); this.bus.on(e, cb); return this; }
@@ -568,24 +556,16 @@ class SocketClient extends GameClient {
       'player:ready', 'game:started', 'game:intro', 'game:round', 'game:choice_update',
       'game:summary', 'game:next_update', 'game:judging', 'game:ended',
     ];
-    events.forEach((event) => this.socket.on(event, (payload) => {
-      if (event === 'game:ended') this._clearSession();
-      this.bus.emit(event, payload);
-    }));
+    events.forEach((event) => this.socket.on(event, (payload) => this.bus.emit(event, payload)));
     this.socket.on('disconnect', () => {
       this.needsReconnect = true;
       this.bus.emit('connection:error', { error: '与服务器连接中断，正在等待自动重连' });
     });
     this.socket.on('connect', () => {
-      if (!this.needsReconnect || !this.lastJoin || !this.playerToken) return;
+      if (!this.needsReconnect || !this.lastJoin) return;
       this.needsReconnect = false;
-      this.socket.emit('room:join', { ...this.lastJoin, playerToken: this.playerToken }, (ack) => {
-        if (ack?.ok && ack.playerToken) {
-          this.playerToken = ack.playerToken;
-          this._saveSession();
-        } else if (!ack?.ok) {
-          this.bus.emit('connection:error', ack || { error: '自动重连失败' });
-        }
+      this.socket.emit('room:join', this.lastJoin, (ack) => {
+        if (!ack?.ok) this.bus.emit('connection:error', ack || { error: '自动重连失败' });
       });
     });
   }
@@ -611,6 +591,7 @@ class SocketClient extends GameClient {
   async createRoom(payload) { return this._req('POST', '/api/admin/rooms', payload || {}); }
   async listRooms() { return this._req('GET', '/api/admin/rooms'); }
   async listRoomHistory() { return this._req('GET', '/api/admin/rooms/history'); }
+  async deleteRoomHistory(id) { return this._req('DELETE', '/api/admin/rooms/history/' + encodeURIComponent(id)); }
   async getRoom(id) { return this._req('GET', '/api/admin/rooms/' + encodeURIComponent(id)); }
   async closeRoom(id) { return this._req('POST', '/api/admin/rooms/' + encodeURIComponent(id) + '/close'); }
 
@@ -619,21 +600,8 @@ class SocketClient extends GameClient {
       roomCode: String(payload.roomCode || '').trim().toUpperCase(),
       name: String(payload.name || '').trim(),
     };
-    const previous = this.lastJoin;
-    const sameIdentity = previous
-      && previous.roomCode === identity.roomCode
-      && previous.name === identity.name;
-    const reconnectToken = sameIdentity ? this.playerToken : null;
     this.lastJoin = identity;
-    const ack = await this._emitAck('room:join', {
-      ...identity,
-      playerToken: payload.playerToken || reconnectToken,
-    });
-    if (ack?.ok && ack.playerToken) {
-      this.playerToken = ack.playerToken;
-      this._saveSession();
-    }
-    return ack;
+    return this._emitAck('room:join', identity);
   }
 
   _emitAck(event, payload = {}, timeoutMs = 15000) {
@@ -659,9 +627,7 @@ class SocketClient extends GameClient {
   async leave() {
     if (!this.socket || !this.lastJoin) return { ok: true, reconnectable: false };
     const ack = await this._emitAck('room:leave');
-    if (ack?.ok && !ack.reconnectable) {
-      this._clearSession();
-    }
+    if (ack?.ok && !ack.reconnectable) this.lastJoin = null;
     return ack;
   }
 }

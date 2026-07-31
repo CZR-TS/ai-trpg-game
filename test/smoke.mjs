@@ -95,7 +95,11 @@ const main = async () => {
   const openingReadyPromise = waitForWhere(playerA, 'room:state', ({ room: state }) => state.openingStatus === 'ready');
   const joinB = await emitAck(playerB, 'room:join', { roomCode: room.code, name: '阿乙' });
   const openingReady = await openingReadyPromise;
-  check('玩家 A/B 加入并取得重连凭证', joinA.role === 'A' && joinB.role === 'B' && !!joinA.playerToken && !!joinB.playerToken);
+  check('玩家 A/B 通过房间码和昵称加入', joinA.role === 'A' && joinB.role === 'B');
+  const duplicateNameClient = await connectClient();
+  const duplicateName = await emitAck(duplicateNameClient, 'room:join', { roomCode: room.code, name: '阿乙' });
+  check('在线昵称不能被其他连接顶号', duplicateName.ok === false);
+  duplicateNameClient.close();
   check('两名玩家到齐后自动预加载开场', openingReady.room.openingStatus === 'ready');
   const secondJoin = await emitAck(playerA, 'room:join', { roomCode: room.code, name: '重复' });
   check('同一连接不能重复加入', secondJoin.ok === false);
@@ -108,6 +112,8 @@ const main = async () => {
 
   await emitAck(playerA, 'room:ready');
   await emitAck(playerB, 'room:ready');
+  const guestStart = await emitAck(playerB, 'game:start');
+  check('非房主不能开始游戏', guestStart.ok === false);
   const introPromise = waitFor(playerA, 'game:intro');
   const startResult = await emitAck(playerA, 'game:start');
   const intro = await introPromise;
@@ -121,7 +127,6 @@ const main = async () => {
   const sameNameReconnect = await emitAck(playerB, 'room:join', { roomCode: room.code, name: '阿乙' });
   await resumedIntroPromise;
   check('游戏开始后也可用同名认领离线席位', sameNameReconnect.ok && sameNameReconnect.role === 'B' && sameNameReconnect.reconnected === true);
-  check('重连后凭证自动轮换', sameNameReconnect.playerToken && sameNameReconnect.playerToken !== rejoinB.playerToken);
 
   const premature = await emitAck(playerA, 'game:choice', { choiceId: '继续前行' });
   check('开场确认前不能提前提交', premature.ok === false);
@@ -141,6 +146,7 @@ const main = async () => {
     const choiceB = await emitAck(playerB, 'game:choice', { choiceId: current.choices_B[0] });
     check(`第${current.round}回合合法提交且禁止重复`, choiceA.ok && choiceB.ok && repeated.ok === false);
     const outcomePromise = waitForOutcome(playerA);
+    const preloadStatusPromise = guard === 0 ? waitFor(playerA, 'game:preload_status') : null;
     const advance = await emitAck(playerA, 'game:advance');
     check(`第${current.round}回合推进`, advance.ok);
     const outcome = await outcomePromise;
@@ -149,6 +155,10 @@ const main = async () => {
       break;
     }
     check(`第${current.round}回合收到结果反馈`, typeof outcome.data.summary === 'string');
+    if (preloadStatusPromise) {
+      const preloadStatus = await preloadStatusPromise;
+      check('无人点击下一步时后台已完成下一回合预加载', preloadStatus.status === 'ready');
+    }
     await emitAck(playerA, 'game:next');
     const roundPromise = waitFor(playerA, 'game:round');
     const proceed = await emitAck(playerB, 'game:next');
@@ -161,10 +171,22 @@ const main = async () => {
   const historyBody = await historyResponse.json();
   const saved = historyBody.history?.find((item) => item.code === room.code);
   check('后台历史接口返回已结束房间', historyResponse.status === 200 && saved?.history?.length > 0);
+  check('历史存储上限固定为 200MB', historyBody.storage?.limitBytes === 200 * 1024 * 1024);
+  check('历史存储用量和单条文件大小可统计', saved?.fileBytes > 0 && historyBody.storage?.usedBytes >= saved.fileBytes);
   const activeResponse = await fetch(BASE + '/api/admin/rooms', { headers: { Cookie: cookie } });
   const activeBody = await activeResponse.json();
   check('已结束房间不再混入当前房间列表', !activeBody.rooms?.some((item) => item.code === room.code));
 
+  const deleteResponse = await fetch(BASE + '/api/admin/rooms/history/' + encodeURIComponent(saved.id), {
+    method: 'DELETE', headers: { Cookie: cookie },
+  });
+  const deleteBody = await deleteResponse.json();
+  check('管理员可手动删除指定历史记录', deleteResponse.status === 200 && deleteBody.ok === true);
+  const afterDeleteResponse = await fetch(BASE + '/api/admin/rooms/history', { headers: { Cookie: cookie } });
+  const afterDeleteBody = await afterDeleteResponse.json();
+  check('只删除本次测试记录并更新存储用量',
+    !afterDeleteBody.history?.some((item) => item.id === saved.id)
+      && afterDeleteBody.storage?.usedBytes <= historyBody.storage?.usedBytes);
   playerA.close();
   playerB.close();
   console.log(`\n结果：${pass} 通过 / ${fail} 失败`);

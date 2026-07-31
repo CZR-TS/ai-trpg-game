@@ -8,7 +8,7 @@
 
   const state = {
     view: 'admin-login',   // admin-login | admin-panel | player-entry | lobby | game | ending
-    admin: { loggedIn: false, worldbooks: [], current: null, rooms: [], history: [], lastRoom: null },
+    admin: { loggedIn: false, worldbooks: [], current: null, rooms: [], history: [], storage: { usedBytes: 0, limitBytes: 200 * 1024 * 1024, fileCount: 0 }, lastRoom: null },
     room: null,            // 房间全量镜像（room:state 推送）
     me: null,              // { role, name }
     game: { phase: 'intro', intro: null, summary: null, next: { me: false, opp: false } }, // intro | round | summary | judging | ended
@@ -57,6 +57,13 @@
     } else {
       legacyCopy(text);
     }
+  }
+
+  function formatBytes(bytes) {
+    const value = Math.max(0, Number(bytes) || 0);
+    if (value < 1024) return value + ' B';
+    if (value < 1024 * 1024) return (value / 1024).toFixed(1) + ' KB';
+    return (value / 1024 / 1024).toFixed(2) + ' MB';
   }
 
   function legacyCopy(text) {
@@ -117,6 +124,10 @@
     state.game.summary = payload;
     state.game.next = { me: false, opp: false };
     render();
+  });
+  client.on('game:preload_status', ({ status }) => {
+    if (state.game.summary) state.game.summary.preloadStatus = status;
+    if (state.game.phase === 'summary') render();
   });
   client.on('game:next_update', ({ role, confirmed }) => {
     if (state.me && role === OPP(state.me.role)) state.game.next.opp = confirmed;
@@ -188,6 +199,7 @@
     ]);
     if (roomsResult && roomsResult.rooms) state.admin.rooms = roomsResult.rooms;
     if (historyResult && historyResult.history) state.admin.history = historyResult.history;
+    if (historyResult && historyResult.storage) state.admin.storage = historyResult.storage;
   }
 
   function renderAdminPanel() {
@@ -227,6 +239,17 @@
       roomList.appendChild(UI.el('p', { class: 'hint', text: '暂无房间，点击上方创建。' }));
     }
     state.admin.rooms.forEach((room) => roomList.appendChild(renderRoomItem(room)));
+
+    const storageBox = $('history-storage');
+    UI.clear(storageBox);
+    const storage = state.admin.storage || { usedBytes: 0, limitBytes: 200 * 1024 * 1024, fileCount: 0 };
+    const ratio = storage.limitBytes > 0 ? storage.usedBytes / storage.limitBytes : 0;
+    storageBox.appendChild(UI.el('div', { class: 'history-storage-row' }, [
+      UI.el('span', { text: '历史存储用量' }),
+      UI.el('b', { text: `${formatBytes(storage.usedBytes)} / ${formatBytes(storage.limitBytes)}（${Math.min(100, ratio * 100).toFixed(2)}%）` }),
+    ]));
+    storageBox.appendChild(UI.progressBar(ratio, ratio >= 0.9 ? 'storage-danger' : ratio >= 0.75 ? 'storage-warning' : 'storage-normal'));
+    storageBox.appendChild(UI.el('p', { class: 'hint', text: `共 ${storage.fileCount || 0} 条记录；系统不会自动删除，请按需手动清理。` }));
 
     const historyList = $('room-history');
     UI.clear(historyList);
@@ -302,11 +325,26 @@
           UI.el('div', { class: 'room-item-code', text: record.code }),
           UI.el('div', { class: 'room-item-meta', text: `回合 ${record.round || 0} · ${names}` }),
         ]),
-        UI.el('span', { class: 'badge ended', text: '已结束' }),
+        UI.el('div', { class: 'history-actions' }, [
+          UI.el('span', { class: 'badge ended', text: '已结束' }),
+          UI.el('button', { class: 'icon-btn history-delete', type: 'button', title: '删除这条历史记录', onclick: () => deleteHistoryRecord(record) }, [UI.icon('trash-2')]),
+        ]),
       ]),
       record.ending?.title ? UI.el('div', { class: 'room-item-meta', text: '结局：' + record.ending.title }) : null,
-      UI.el('div', { class: 'room-item-meta', text: '结束于 ' + UI.formatTime(record.endedAt || record.createdAt) }),
+      UI.el('div', { class: 'room-item-meta', text: `结束于 ${UI.formatTime(record.endedAt || record.createdAt)} · ${formatBytes(record.fileBytes)}` }),
     ]);
+  }
+
+  async function deleteHistoryRecord(record) {
+    if (!window.confirm(`确定删除房间 ${record.code} 的历史记录吗？此操作不可恢复。`)) return;
+    const res = await adminCall(() => client.deleteRoomHistory(record.id));
+    if (!res || !res.ok) {
+      UI.toast((res && res.error) || '删除失败');
+      return;
+    }
+    await refreshRooms();
+    render();
+    UI.toast('历史记录已删除');
   }
 
   function playerLine(p) {
@@ -457,31 +495,43 @@
     const isWaiting = room.status === 'lobby' || room.status === 'waiting';
     const isHost = state.me?.role === 'A';
     const canStart = isHost && aReady && bReady && isWaiting;
-    acts.appendChild(UI.el('button', {
-      class: 'btn btn-primary btn-block', type: 'button', disabled: !canStart,
-      onclick: async () => {
-        if (!canStart) return;
-        // 立即反馈：真实 AI 生成开场需要一点时间
-        UI.clear(acts);
-        acts.appendChild(waitLine('DM 正在生成开场信息…'));
-        UI.refreshIcons();
-        const res = await client.startGame();
-        if (!res || !res.ok) {
-          UI.toast((res && res.error) || '开始失败，请重试');
-          render();
-        }
-      },
-    }, [UI.icon('play'), UI.el('span', { text: '开始游戏' })]));
+    if (isHost) {
+      acts.appendChild(UI.el('button', {
+        class: 'btn btn-primary btn-block', type: 'button', disabled: !canStart,
+        onclick: async () => {
+          if (!canStart) return;
+          // 立即反馈：真实 AI 生成开场需要一点时间
+          UI.clear(acts);
+          acts.appendChild(waitLine('DM 正在生成开场信息…'));
+          UI.refreshIcons();
+          const res = await client.startGame();
+          if (!res || !res.ok) {
+            UI.toast((res && res.error) || '开始失败，请重试');
+            render();
+          }
+        },
+      }, [UI.icon('play'), UI.el('span', { text: '开始游戏' })]));
+    } else {
+      const waitingText = !myPlayer.ready
+        ? '准备后等待房主开始游戏'
+        : aReady && bReady
+          ? '双方已准备，等待房主开始游戏'
+          : '你已准备，等待另一位玩家准备';
+      acts.appendChild(UI.el('div', { class: 'lobby-waiting' }, [
+        UI.icon(aReady && bReady ? 'hourglass' : 'clock-3'),
+        UI.el('span', { text: waitingText }),
+      ]));
+    }
     if (isWaiting && room.openingStatus === 'loading') {
       acts.appendChild(UI.el('p', { class: 'hint', text: 'DM 正在后台预生成开场，准备期间无需等待。' }));
     } else if (isWaiting && room.openingStatus === 'ready') {
       acts.appendChild(UI.el('p', { class: 'hint', text: '开场已预加载，可以立即开始。' }));
-    } else if (!canStart) {
+    } else if (isHost && !canStart) {
       const hint = !isWaiting
         ? '游戏进行中'
         : !aReady || !bReady
           ? '等待双方准备就绪…'
-          : '双方已准备，等待房主开始…';
+          : '双方已准备，可以开始游戏。';
       acts.appendChild(UI.el('p', { class: 'hint', text: hint }));
     }
   }
@@ -568,8 +618,8 @@
       UI.el('p', { class: 'info-world', text: (intro && intro.world) || '（开场信息生成中…）' }),
     ]));
     na.appendChild(UI.el('div', { class: 'info-roles' }, [
-      UI.el('div', { class: 'info-role-card' }, [UI.icon('user'), UI.el('b', { text: '玩家 A' }), UI.el('p', { text: (intro && intro.roleA) || '' })]),
-      UI.el('div', { class: 'info-role-card' }, [UI.icon('user'), UI.el('b', { text: '玩家 B' }), UI.el('p', { text: (intro && intro.roleB) || '' })]),
+      UI.el('div', { class: 'info-role-card' }, [UI.icon('user'), UI.el('b', { text: state.room?.players?.A?.name || '玩家 A' }), UI.el('p', { text: (intro && intro.roleA) || '' })]),
+      UI.el('div', { class: 'info-role-card' }, [UI.icon('user'), UI.el('b', { text: state.room?.players?.B?.name || '玩家 B' }), UI.el('p', { text: (intro && intro.roleB) || '' })]),
     ]));
     renderNextButton('开始冒险', 'flag');
   }
@@ -586,8 +636,8 @@
     ]));
     if (summary) {
       const revealBox = UI.el('div', { class: 'reveal-box' }, [
-        UI.el('div', { class: 'reveal-item' }, [UI.el('b', { text: '玩家 A' }), UI.el('span', { text: summary.choiceA || '（未行动）' })]),
-        UI.el('div', { class: 'reveal-item' }, [UI.el('b', { text: '玩家 B' }), UI.el('span', { text: summary.choiceB || '（未行动）' })]),
+        UI.el('div', { class: 'reveal-item' }, [UI.el('b', { text: summary.playerNames?.A || state.room?.players?.A?.name || '玩家 A' }), UI.el('span', { text: summary.choiceA || '（未行动）' })]),
+        UI.el('div', { class: 'reveal-item' }, [UI.el('b', { text: summary.playerNames?.B || state.room?.players?.B?.name || '玩家 B' }), UI.el('span', { text: summary.choiceB || '（未行动）' })]),
       ]);
       na.appendChild(revealBox);
       const body = UI.el('div', { class: 'narrative-text' });
@@ -598,6 +648,13 @@
       } else {
         typedDone.summary = text;
         typeNarrative(body, text);
+      }
+      if (summary.preloadStatus) {
+        const preloadReady = summary.preloadStatus === 'ready';
+        na.appendChild(UI.el('div', { class: 'round-preload-status' + (preloadReady ? ' ready' : '') }, [
+          UI.icon(preloadReady ? 'check-circle-2' : 'loader', preloadReady ? '' : 'icon-spin'),
+          UI.el('span', { text: preloadReady ? '下一回合已预加载' : 'DM 正在后台准备下一回合…' }),
+        ]));
       }
       renderStatusPanel(summary.storyState, state.me.role);
     }
@@ -691,7 +748,11 @@
       UI.el('div', { class: 'block-sub', text: state.turn.submitted ? '已提交' : '选择一项' }),
     ]));
     const list = UI.el('div', { class: 'choice-list' });
-    choices.forEach((c) => {
+    (Array.isArray(choices) ? choices : []).forEach((rawChoice, index) => {
+      const c = typeof rawChoice === 'string'
+        ? { id: rawChoice, text: rawChoice }
+        : { id: rawChoice?.id || rawChoice?.text || String(index), text: rawChoice?.text || rawChoice?.label || String(rawChoice?.id || '') };
+      if (!c.text) return;
       const isPick = state.turn.myChoiceId === c.id;
       list.appendChild(UI.el('button', {
         class: 'choice-item' + (isPick ? ' selected' : ''),
@@ -699,8 +760,9 @@
         disabled: state.turn.submitted,
         onclick: () => pickChoice(c.id),
       }, [
+        UI.el('span', { class: 'choice-index', text: String(index + 1) }),
         UI.el('span', { class: 'choice-text', text: c.text }),
-        isPick ? UI.icon('check', 'choice-mark') : null,
+        UI.icon(isPick ? 'check' : 'chevron-right', 'choice-mark'),
       ]));
     });
     box.appendChild(list);
@@ -710,14 +772,15 @@
       UI.el('div', { class: 'custom-head' }, [UI.icon('pencil-line'), UI.el('span', { text: '自定义行动' })]),
       UI.el('div', { class: 'custom-row' }, [
         UI.el('input', {
-          class: 'custom-input',
+          class: 'input custom-input',
           type: 'text',
+          maxlength: '200',
           placeholder: '输入你想做的任意事…',
-          maxlength: '120',
           disabled: state.turn.submitted,
+          onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submitCustomChoice(); } },
         }),
         UI.el('button', {
-          class: 'btn btn-ghost custom-btn',
+          class: 'btn btn-ghost',
           type: 'button',
           disabled: state.turn.submitted,
           onclick: submitCustomChoice,
@@ -764,10 +827,43 @@
     const panel = $('status-panel');
     UI.clear(panel);
     if (!storyState) return;
+    const shared = deriveSharedState(storyState);
+    const sharedKeys = new Set(Object.keys(shared));
+    if (sharedKeys.size) panel.appendChild(sharedStatusCard(shared));
     panel.appendChild(UI.el('div', { class: 'status-row' }, [
-      statusChip(storyState[myRole], myRole, true),
-      statusChip(storyState[OPP(myRole)], OPP(myRole), false),
+      statusChip(storyState[myRole], myRole, true, sharedKeys),
+      statusChip(storyState[OPP(myRole)], OPP(myRole), false, sharedKeys),
     ]));
+  }
+
+  const SHARED_STATE_KEYS = new Set(['位置', 'location', '场景', 'scene', '时间', 'time', '天气', 'weather', '共同目标', '队伍目标', 'team_goal', '共享物品', 'shared_inventory']);
+  const OPPONENT_VISIBLE_KEYS = new Set(['name', 'hp', 'health', 'status', 'condition', 'location', 'position', 'alignment', 'level', 'class', '生命', '生命值', '状态', '位置', '阵营', '等级', '职业', '境界', '外观']);
+
+  function deriveSharedState(storyState) {
+    const explicit = storyState.shared || storyState.共同 || storyState.公共;
+    const shared = explicit && !Array.isArray(explicit) && typeof explicit === 'object' ? { ...explicit } : {};
+    const a = storyState.A || {};
+    const b = storyState.B || {};
+    SHARED_STATE_KEYS.forEach((key) => {
+      if (key in a && key in b && JSON.stringify(a[key]) === JSON.stringify(b[key]) && !(key in shared)) shared[key] = a[key];
+    });
+    return shared;
+  }
+
+  function visibleStatusFields(player, own, sharedKeys) {
+    if (!player || Array.isArray(player) || typeof player !== 'object') return {};
+    const result = {};
+    const publicPart = player._public || player.public || player.公开;
+    const privatePart = player._private || player.private || player.私密;
+    Object.entries(player).forEach(([key, value]) => {
+      if (key === 'name' || sharedKeys.has(key)) return;
+      if (['_public', 'public', '公开', '_private', 'private', '私密'].includes(key)) return;
+      if (/^_?flags?(?:_|$)/i.test(key)) return;
+      if (own || OPPONENT_VISIBLE_KEYS.has(key)) result[key] = value;
+    });
+    if (publicPart && !Array.isArray(publicPart) && typeof publicPart === 'object') Object.assign(result, publicPart);
+    if (own && privatePart && !Array.isArray(privatePart) && typeof privatePart === 'object') Object.assign(result, privatePart);
+    return result;
   }
 
   // AI 可自定义状态字段：字段名→图标/中文名；未收录的字段显示原名
@@ -782,23 +878,51 @@
     luck: { icon: 'clover', label: '幸运' },
   };
 
-  function statusChip(p, role, isMe) {
+  function statusChip(p, role, isMe, sharedKeys = new Set()) {
     const chip = UI.el('div', { class: 'status-chip' + (isMe ? ' me' : '') });
-    chip.appendChild(UI.el('span', { class: 'sc-name' }, [
-      UI.icon(isMe ? 'user-check' : 'user'),
-      UI.el('b', { text: (p && p.name) || '玩家 ' + role }),
+    chip.appendChild(UI.el('div', { class: 'status-chip-head' }, [
+      UI.el('span', { class: 'sc-name' }, [
+        UI.icon(isMe ? 'user-check' : 'user'),
+        UI.el('b', { text: (p && p.name) || state.room?.players?.[role]?.name || '玩家 ' + role }),
+      ]),
+      UI.el('span', { class: 'status-role' + (isMe ? ' me' : ''), text: isMe ? '你 · ' + role : '玩家 ' + role }),
     ]));
     if (p && typeof p === 'object') {
-      for (const [key, val] of Object.entries(p)) {
-        if (key === 'name') continue;
+      const stats = UI.el('div', { class: 'status-stats' });
+      for (const [key, val] of Object.entries(visibleStatusFields(p, isMe, sharedKeys))) {
         const meta = FIELD_META[key] || { icon: 'circle-dot', label: key };
-        chip.appendChild(UI.el('span', { class: 'sc-stat', title: meta.label }, [
+        const display = val != null && typeof val === 'object' ? (Array.isArray(val) ? val.join('、') : JSON.stringify(val)) : String(val ?? '—');
+        const wide = key === 'note' || key === 'notes' || display.length > 12;
+        stats.appendChild(UI.el('div', { class: 'sc-stat' + (wide ? ' wide' : ''), title: meta.label }, [
           UI.icon(meta.icon),
-          UI.el('span', { text: meta.label + ' ' + val }),
+          UI.el('span', { class: 'sc-stat-copy' }, [
+            UI.el('small', { text: meta.label }),
+            UI.el('strong', { text: display }),
+          ]),
         ]));
       }
+      chip.appendChild(stats);
     }
     return chip;
+  }
+
+  function sharedStatusCard(shared) {
+    const card = UI.el('div', { class: 'shared-status-card' });
+    card.appendChild(UI.el('div', { class: 'shared-status-head' }, [
+      UI.icon('map-pinned'),
+      UI.el('b', { text: '共同状态' }),
+    ]));
+    const grid = UI.el('div', { class: 'status-stats' });
+    Object.entries(shared).forEach(([key, val]) => {
+      const meta = FIELD_META[key] || { icon: 'circle-dot', label: key };
+      const display = val != null && typeof val === 'object' ? (Array.isArray(val) ? val.join('、') : JSON.stringify(val)) : String(val ?? '—');
+      grid.appendChild(UI.el('div', { class: 'sc-stat' + (display.length > 12 ? ' wide' : '') }, [
+        UI.icon(meta.icon),
+        UI.el('span', { class: 'sc-stat-copy' }, [UI.el('small', { text: meta.label }), UI.el('strong', { text: display })]),
+      ]));
+    });
+    card.appendChild(grid);
+    return card;
   }
 
   // 操作栏状态机：选择 → 提交 → 等待对方 → AI 推进 → 编织中 / 判定中
