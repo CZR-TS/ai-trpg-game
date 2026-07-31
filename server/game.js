@@ -523,6 +523,7 @@ async function generateNode(room, config, charCard, { kind, history, choiceA, ch
     ? Math.max(0, room.worldbook.scan_depth)
     : Math.max(0, Number(config.game.scanDepth) || 0);
   const scanText =
+    (summary ? `上轮总结:${summary} ` : '') +
     history
       .slice(-scanDepth)
       .map((h) => `${h.narrative} 玩家A:${h.choiceA || ''} 玩家B:${h.choiceB || ''}`)

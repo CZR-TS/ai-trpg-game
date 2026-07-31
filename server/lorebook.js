@@ -13,6 +13,7 @@ export function loadWorldbookFile(filePath) {
     recursive_scanning: data.recursive_scanning !== false,
     scan_depth: Number.isInteger(data.scan_depth) ? Math.max(0, data.scan_depth) : null,
     token_budget: Number.isFinite(Number(data.token_budget)) ? Math.max(0, Number(data.token_budget)) : null,
+    recursive_depth: Number.isInteger(data.recursive_depth) ? Math.max(0, data.recursive_depth) : 2,
     entries,
   };
 }
@@ -96,7 +97,7 @@ function entryMatches(entry, text) {
 export function activateEntries(worldbook, scanText, opts = {}) {
   if (!worldbook || !Array.isArray(worldbook.entries)) return [];
   const budget = Math.max(0, Number(opts.budget ?? 1500));
-  const maxRecursion = Math.max(0, Number(opts.maxRecursion ?? 2));
+  const maxRecursion = Math.max(0, Number(opts.maxRecursion ?? worldbook.recursive_depth ?? 2));
   let text = String(scanText || '');
   const activated = [];
   const activatedSet = new Set();
@@ -142,7 +143,10 @@ export function activateEntries(worldbook, scanText, opts = {}) {
   let frontier = sweep(0);
   if (worldbook.recursive_scanning) {
     for (let depth = 1; depth <= maxRecursion; depth++) {
-      const extra = frontier.filter((entry) => !entry.preventRecursion).map((entry) => entry.content).join('\n');
+      const extra = frontier
+        .filter((entry) => !entry.preventRecursion && !entry.constant)
+        .map((entry) => entry.content)
+        .join('\n');
       if (!extra) break;
       text += `\n${extra}`;
       frontier = sweep(depth);
@@ -151,15 +155,17 @@ export function activateEntries(worldbook, scanText, opts = {}) {
   }
 
   activated.sort((a, b) => a.order - b.order);
+  const byPriority = [...activated].sort((a, b) => b.order - a.order);
   let used = 0;
-  const output = [];
-  for (const entry of activated) {
+  const selected = [];
+  for (const entry of byPriority) {
     const cost = estimateTokens(entry.content);
     if (used + cost > budget) continue;
-    output.push(entry);
+    selected.push(entry);
     used += cost;
   }
-  return output;
+  selected.sort((a, b) => a.order - b.order);
+  return selected;
 }
 
 export function buildLoreText(worldbook, activated) {
