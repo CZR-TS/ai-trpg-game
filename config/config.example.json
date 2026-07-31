@@ -1,0 +1,31 @@
+{
+  "ai": {
+    "baseURL": "https://open.bigmodel.cn/api/paas/v4",
+    "apiKey": "",
+    "model": "glm-4-flash",
+    "temperature": 0.9,
+    "maxTokens": 2048,
+    "timeoutMs": 60000
+  },
+  "server": {
+    "port": 38571,
+    "host": "0.0.0.0"
+  },
+  "auth": {
+    "username": "admin",
+    "password": "请替换为独立强密码",
+    "jwtSecret": "",
+    "jwtExpiresDays": 7,
+    "loginMaxFails": 5,
+    "loginWindowMs": 60000,
+    "banMs": 900000
+  },
+  "game": {
+    "roomCodeLen": 8,
+    "scanDepth": 4,
+    "worldbookTokenBudget": 1500,
+    "historyRounds": 6,
+    "historyMaxRounds": 100,
+    "currentWorldbookId": "fantasy-example"
+  }
+}

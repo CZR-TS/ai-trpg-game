@@ -1,0 +1,50 @@
+{
+  "name": "我的世界书",
+  "description": "在此填写你的世界书。兼容 SillyTavern 格式。",
+  "scan_depth": null,
+  "token_budget": null,
+  "recursive_scanning": true,
+  "extensions": {},
+  "entries": {
+    "0": {
+      "uid": 0,
+      "comment": "【示例·常驻】世界观总纲",
+      "key": [],
+      "keysecondary": [],
+      "content": "（这里写世界观总纲。因为 constant=true，它会被始终注入 AI 上下文，建议控制在 300-800 字。）",
+      "constant": true,
+      "order": 100,
+      "position": 1,
+      "disable": false,
+      "probability": 100,
+      "group": "",
+      "groupWeight": 100,
+      "selective": true,
+      "selectiveLogic": 0,
+      "role": null,
+      "depth": 4,
+      "caseSensitive": null,
+      "matchWholeWords": false
+    },
+    "1": {
+      "uid": 1,
+      "comment": "【示例·关键词触发】某个物品",
+      "key": ["圣剑", "黎明之刃"],
+      "keysecondary": [],
+      "content": "圣剑·黎明之刃：一把散发金光的长剑，据说由光明教廷铸造……（被提到时才注入）",
+      "constant": false,
+      "order": 100,
+      "position": 1,
+      "disable": false,
+      "probability": 100,
+      "group": "",
+      "groupWeight": 100,
+      "selective": true,
+      "selectiveLogic": 0,
+      "role": null,
+      "depth": 4,
+      "caseSensitive": null,
+      "matchWholeWords": false
+    }
+  }
+}

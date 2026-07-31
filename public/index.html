@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>AI 双人跑团</title>
+  <meta name="description" content="AI 当 DM，看着世界书实时编剧情，两位玩家做选择推进剧情。">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- 顶部导航 -->
+  <header class="topbar">
+    <div class="topbar-inner">
+      <button class="brand" data-action="go-home" type="button">
+        <i data-lucide="dices"></i><span>AI 双人跑团</span>
+      </button>
+      <nav class="role-switch">
+        <button class="link" data-action="goto-player" data-role="player" type="button">玩家</button>
+        <span class="sep" aria-hidden="true"></span>
+        <button class="link" data-action="goto-admin" data-role="admin" type="button">管理员</button>
+      </nav>
+    </div>
+  </header>
+
+  <main id="app">
+    <!-- 1. 管理员登录（门禁，默认不显示；点右上角"管理员"进入） -->
+    <section data-view="admin-login" class="view">
+      <div class="sheet narrow center-vert">
+        <header class="sheet-head center">
+          <i data-lucide="user" class="hero-icon"></i>
+          <h1>管理员登录</h1>
+          <p class="sub">站点门禁与后台。仅管理员可进入。</p>
+        </header>
+        <form id="form-login" class="stack" autocomplete="off">
+          <label class="field">
+            <span class="label">账号</span>
+            <div class="input-wrap">
+              <i data-lucide="user"></i>
+              <input id="inp-user" type="text" placeholder="账号" autocomplete="off">
+            </div>
+          </label>
+          <label class="field">
+            <span class="label">密码</span>
+            <div class="input-wrap">
+              <i data-lucide="lock"></i>
+              <input id="inp-pass" type="password" placeholder="密码" autocomplete="off">
+            </div>
+          </label>
+          <p id="login-error" class="field-error" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block">
+            <i data-lucide="log-in"></i><span>登录</span>
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- 2. 后台管理（桌面优先） -->
+    <section data-view="admin-panel" class="view">
+      <div class="sheet wide">
+        <header class="sheet-head row">
+          <div>
+            <h1>后台管理</h1>
+            <p class="sub">你是组织者与旁观者：管理世界书、创建房间，不参与玩家选择。</p>
+          </div>
+          <button class="btn btn-ghost" data-action="admin-logout" type="button">
+            <i data-lucide="log-out"></i><span>退出</span>
+          </button>
+        </header>
+        <div class="admin-grid">
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title"><i data-lucide="book-open"></i><span>世界书</span></h2>
+                <p class="panel-desc">选择当前世界书，新建房间将默认使用它。</p>
+              </div>
+            </div>
+            <div id="wb-list" class="list"></div>
+            <label class="btn btn-ghost btn-block file-import">
+              <i data-lucide="upload"></i><span>导入世界书 (.json)</span>
+              <input id="inp-wb-file" type="file" accept=".json,application/json" hidden>
+            </label>
+            <p id="wb-import-info" class="hint" hidden></p>
+          </section>
+          <section class="panel">
+            <div class="panel-head">
+              <div>
+                <h2 class="panel-title"><i data-lucide="door-open"></i><span>房间</span></h2>
+                <p class="panel-desc">创建房间生成房间码，两位玩家凭码加入。</p>
+              </div>
+              <button class="icon-btn" data-action="room-refresh" type="button" title="刷新房间列表">
+                <i data-lucide="refresh-cw"></i>
+              </button>
+            </div>
+            <button class="btn btn-primary btn-block" data-action="create-room" type="button">
+              <i data-lucide="plus"></i><span>创建房间</span>
+            </button>
+            <div id="room-new" class="room-new" hidden></div>
+            <div id="room-list" class="list room-list"></div>
+            <div class="history-head">
+              <h3><i data-lucide="history"></i><span>历史记录</span></h3>
+              <span>已结束和已关闭的房间</span>
+            </div>
+            <div id="room-history" class="list"></div>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3. 玩家入口（手机优先，默认视图） -->
+    <section data-view="player-entry" class="view view-active">
+      <div class="sheet narrow center-vert">
+        <header class="sheet-head center">
+          <i data-lucide="key-round" class="hero-icon"></i>
+          <h1>进入房间</h1>
+          <p class="sub">凭房间码与昵称加入，无需账号。</p>
+        </header>
+        <form id="form-join" class="stack" autocomplete="off">
+          <label class="field">
+            <span class="label">房间码</span>
+            <div class="input-wrap">
+              <i data-lucide="key-round"></i>
+              <input id="inp-code" class="code-input" type="text" placeholder="8 位房间码" maxlength="8" autocomplete="off" spellcheck="false">
+            </div>
+          </label>
+          <label class="field">
+            <span class="label">昵称</span>
+            <div class="input-wrap">
+              <i data-lucide="user"></i>
+              <input id="inp-name" type="text" placeholder="你的称呼" maxlength="12" autocomplete="off">
+            </div>
+          </label>
+          <p id="join-error" class="field-error" hidden></p>
+          <button type="submit" class="btn btn-primary btn-block">
+            <span>进入</span><i data-lucide="arrow-right"></i>
+          </button>
+        </form>
+      </div>
+    </section>
+
+    <!-- 4. 大厅 -->
+    <section data-view="lobby" class="view">
+      <div class="sheet narrow center-vert">
+        <header class="sheet-head">
+          <div class="room-code-row">
+            <span class="muted">房间码</span>
+            <code id="lobby-code" class="code-chip">--------</code>
+            <button class="icon-btn" data-action="copy-code" type="button" title="复制房间码">
+              <i data-lucide="copy"></i>
+            </button>
+          </div>
+          <p id="lobby-wb" class="lobby-wb" hidden></p>
+        </header>
+        <div id="lobby-seats" class="seats"></div>
+        <div id="lobby-actions" class="stack"></div>
+      </div>
+    </section>
+
+    <!-- 5. 游戏主界面（手机优先） -->
+    <section data-view="game" class="view">
+      <div class="sheet game-sheet">
+        <header id="game-top" class="game-top"></header>
+        <div class="game-body">
+          <div class="game-main">
+            <article id="narrative-area" class="narrative"></article>
+            <div class="choices-area">
+              <section id="my-choices" class="choice-block"></section>
+              <section id="opp-choices" class="choice-block"></section>
+            </div>
+            <div id="action-bar" class="action-bar"></div>
+          </div>
+          <aside id="status-panel" class="status-panel"></aside>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6. 结局 -->
+    <section data-view="ending" class="view">
+      <div class="sheet narrow center-vert">
+        <div id="ending-area"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- lucide 图标（本地化，不依赖 CDN） -->
+  <script src="vendor/lucide.js"></script>
+  <!-- socket.io 客户端（本地化） -->
+  <script src="vendor/socket.io.min.js"></script>
+  <!-- 应用脚本（非 ES module，file:// 可直接打开） -->
+  <script src="js/worldbook-data.js"></script>
+  <script src="js/client.js"></script>
+  <script src="js/ui.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
