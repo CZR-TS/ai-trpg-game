@@ -76,13 +76,11 @@ ai-trpg-game/
 - **[worldbook/README.md](worldbook/README.md)** —— 世界书 JSON 格式说明
 - 完整示例见 `worldbook/examples/xuanhuan-example/worldbook.json`
 
-## 部署（服务器）
+## 部署
 
-- 服务器为 **NAT VPS** 时：服务监听内网 `38571` 端口，需在供应商控制台将「公网 TCP 端口 → 内网 38571」做端口映射（本机 SSH 映射类似）。
-- 部署采用 **releases/current/shared** 原子切换结构（见 `deploy/README.md`）：
-  - `git archive` 打包最新提交 → 上传服务器 `/tmp` → 解压到 `releases/<commit>` → `npm ci --omit=dev` → 单元测试 → 切换 `current` 软链 → `systemctl restart ai-trpg-game`，健康检查失败自动回滚。
-  - `deploy/ai-trpg-game.service`：systemd 服务单元（监听 38571）。
-  - `deploy/update.sh`：从 GitHub 拉取更新的自动部署脚本（NAT 环境可改为手动传包）。
+- 使用 `deploy/` 下的 systemd 服务单元（`ai-trpg-game.service`）与原子切换脚本（`update.sh`），采用 **releases/current/shared** 目录结构：新版本解压到 `releases/<版本>` 后切换 `current` 软链并重启，健康检查失败自动回滚。
+- 更新方式：`git archive` 打包提交上传服务器，或 `update.sh` 直接从 GitHub 拉取。
+- 详细部署说明见 `deploy/README.md`。
 
 ## 状态
 
