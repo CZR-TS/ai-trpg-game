@@ -87,6 +87,8 @@ const main = async () => {
   check('创建唯一房间码', response.status === 200 && room.code === 'SAFE2222', `→ ${room.code}`);
   const duplicate = await post('/api/admin/rooms', { code: 'SAFE2222' }, cookie);
   check('重复房间码被拒绝', duplicate.status === 400, `→ ${duplicate.status}`);
+  const unauthorizedExport = await fetch(BASE + '/api/admin/rooms/' + encodeURIComponent(room.roomId) + '/export');
+  check('未登录不能导出当前房间', unauthorizedExport.status === 401, `→ ${unauthorizedExport.status}`);
 
   console.log('== 2. 双人身份、重连与阶段状态机 ==');
   const playerA = await connectClient();
@@ -172,6 +174,17 @@ const main = async () => {
   check('双方确认后进入首轮', nextA.ok && nextB.ok && current.round === 1);
   check('首轮叙事包含自然分段和安全粗体标记',
     current.narrative.includes('\n\n') && current.narrative.includes('**前方岔路**'));
+  const activeExportResponse = await fetch(BASE + '/api/admin/rooms/' + encodeURIComponent(room.roomId) + '/export', {
+    headers: { Cookie: cookie },
+  });
+  const activeExportText = await activeExportResponse.text();
+  check('后台可导出进行中房间的 Markdown 故事',
+    activeExportResponse.status === 200
+      && activeExportResponse.headers.get('content-type')?.startsWith('text/markdown')
+      && activeExportResponse.headers.get('content-disposition')?.includes('attachment')
+      && activeExportText.includes('# 共叙故事：SAFE2222')
+      && activeExportText.includes('## 世界背景')
+      && activeExportText.includes('### 第 1 回合（当前）'));
   const invalidChoice = await emitAck(playerA, 'game:choice', { choiceId: 'x'.repeat(201) });
   check('超长自由行动被拒绝', invalidChoice.ok === false);
 
@@ -210,6 +223,17 @@ const main = async () => {
   check('历史存储上限固定为 200MB', historyBody.storage?.limitBytes === 200 * 1024 * 1024);
   check('历史存储用量和单条文件大小可统计', saved?.fileBytes > 0 && historyBody.storage?.usedBytes >= saved.fileBytes);
   const activeResponse = await fetch(BASE + '/api/admin/rooms', { headers: { Cookie: cookie } });
+  const historyExportResponse = await fetch(BASE + '/api/admin/rooms/history/' + encodeURIComponent(saved.id) + '/export', {
+    headers: { Cookie: cookie },
+  });
+  const historyExportText = await historyExportResponse.text();
+  check('后台可导出历史记录的完整 Markdown 故事',
+    historyExportResponse.status === 200
+      && historyExportText.includes('## 角色资料')
+      && historyExportText.includes('## 故事正文')
+      && historyExportText.includes('## 世界背景')
+      && historyExportText.includes('## 结局')
+      && !historyExportText.includes('_private'));
   const activeBody = await activeResponse.json();
   check('已结束房间不再混入当前房间列表', !activeBody.rooms?.some((item) => item.code === room.code));
 

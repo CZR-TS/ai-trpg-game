@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import * as game from '../server/game.js';
 import { activateEntries, loadWorldbookFile } from '../server/lorebook.js';
 import { buildHistoryText, buildSystemPrompt, normalizeNarrativeText, normalizeNode } from '../server/llm.js';
+import { buildStoryMarkdown, storyExportFilename } from '../server/story-export.js';
 
 const config = {
   ai: { baseURL: '', apiKey: '', model: '', temperature: 0, maxTokens: 100 },
@@ -121,6 +122,39 @@ assert.equal(
 );
 assert.match(buildSystemPrompt(character), /仅用 \*\*重点文字\*\*/, 'AI 提示词必须要求少量 Markdown 粗体');
 assert.match(buildSystemPrompt(character), /转义换行符 \\n\\n 分段/, 'AI 提示词必须要求自然分段');
+const exportedStory = buildStoryMarkdown({
+  code: 'SAFE2222',
+  worldbookId: 'fantasy-example',
+  status: 'ended',
+  progress: 1,
+  createdAt: 1767225600000,
+  intro: {
+    world: '大陆被 **迷雾** 笼罩。',
+    roleA: '来自北境的调查者。',
+    roleB: '守护古塔的旅人。',
+  },
+  endedAt: 1767229200000,
+  players: { A: '星*岚', B: '烬川' },
+  playerProfiles: { A: { gender: '女', personality: '沉着', details: '识字' } },
+  history: [{
+    round: 1,
+    narrative: '<script>alert(1)</script>\n\n发现 **王冠**。',
+    choiceA: '调查[王冠]',
+    choiceB: '守住入口',
+    storyState: { _private: { secret: true }, flags: { hidden: true } },
+  }],
+  ending: { title: '归来', text: '秘密被揭开。' },
+}, { worldbookName: '测试世界' });
+assert.match(exportedStory, /^# 共叙故事：SAFE2222/m, '导出文件必须包含房间标题');
+assert.match(exportedStory, /## 角色资料[\s\S]*性格.*沉着/, '导出文件必须包含角色资料');
+assert.match(exportedStory, /## 世界背景[\s\S]*\*\*迷雾\*\*/, '导出文件必须包含世界背景');
+assert.match(exportedStory, /开场介绍[\s\S]*来自北境的调查者/, '导出文件必须包含开场角色介绍');
+assert.match(exportedStory, /### 第 1 回合[\s\S]*发现 \*\*王冠\*\*/, '导出文件必须保留故事段落与粗体');
+assert.match(exportedStory, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/, '导出文件必须将叙事 HTML 转为普通文字');
+assert.match(exportedStory, /## 结局[\s\S]*归来/, '导出文件必须包含结局');
+assert.doesNotMatch(exportedStory, /_private|hidden|storyState/, '导出文件不得包含内部状态');
+assert.equal(storyExportFilename('A/B?C'), '共叙-ABC.md', '导出文件名必须移除不安全字符');
+
 
 const organizedState = game.organizeStoryState({
   A: { name: '玩家A', hp: 100, 位置: '城门', 背包: ['弓'], flag_awareness: 1 },
@@ -174,7 +208,7 @@ assert.match(pageCss, /:root\[data-theme='dark'\]/, '样式表必须包含暗色
 assert.match(pageCss, /\.topbar-actions\s*\{/, '顶部操作区必须为品牌和主题按钮预留布局');
 assert.match(pageApp, /localStorage\.setItem\(THEME_KEY, next\)/, '主题选择必须写入本地存储');
 assert.match(pageApp, /dark \? 'sun' : 'moon'/, '主题按钮必须使用 Lucide 的太阳/月亮图标');
-assert.match(pageHtml, /style\.css\?v=20260801-15/, '叙事排版更新后必须刷新静态资源版本');
+assert.match(pageHtml, /style\.css\?v=20260801-17/, 'DM 生成进度更新后必须刷新静态资源版本');
 assert.match(pageHtml, /入场昵称尽量独特[\s\S]*重连时仍用此昵称[\s\S]*剧情昵称不同/, '玩家入口必须用两行短句解释身份昵称');
 assert.match(pageCss, /\.offline-banner\[hidden\]\s*\{\s*display:\s*none/, '未离线时不得显示空的警告横幅');
 assert.match(pageApp, /async \(event\)[\s\S]*client\.saveProfile/, '开场页必须提供角色资料保存交互');
@@ -190,5 +224,15 @@ assert.match(pageApp, /WORKSPACE_KEY = 'trpg_workspace_v1'/, '当前工作区必
 assert.match(pageApp, /管理员登录态与玩家房间态分别恢复/, '刷新时必须分别恢复两个工作区');
 assert.match(pageApp, /if \(isAdminView\(state\.view\)\) return/, '后台收到玩家事件时不能被强制切回游戏页');
 
+assert.match(pageApp, /downloadStory\(room, false\)/, '当前房间必须提供故事导出按钮');
+assert.match(pageApp, /downloadStory\(record, true\)/, '历史记录必须提供故事导出按钮');
+assert.match(pageApp, /URL\.createObjectURL\(result\.blob\)/, '前端必须通过 Blob 下载 Markdown 文件');
+assert.match(pageApp, /GENERATION_PHASES/, '前端必须统一定义 DM 生成阶段');
+assert.match(pageApp, /模型响应较慢，但仍在继续等待/, '长时间生成必须提供明确等待反馈');
+assert.match(pageApp, /Math\.min\(93,/, '估算进度必须停在完成前，不能伪装真实完成');
+assert.match(pageApp, /generationLoader\('summary'\)/, '回合结算必须显示生成进度');
+assert.match(pageCss, /\.dm-generation-orbit\s*\{/, 'DM 生成组件必须提供明确加载动画');
+assert.match(pageCss, /prefers-reduced-motion:\s*reduce/, '加载动画必须尊重减少动态效果设置');
 console.log('后端单元测试通过');
+
 for (const testRoom of [room, preloadRoom, introRoom, brokenRoom]) game.removeActiveRoom(testRoom.id);

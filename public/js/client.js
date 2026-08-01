@@ -49,6 +49,7 @@ class GameClient {
   async deleteRoomHistory(id) {}         // DELETE /api/admin/rooms/history/:id
   async getRoom(id) {}                   // GET  /api/admin/rooms/:id       → {room}（含 history/ending）
   async closeRoom(id) {}                 // POST /api/admin/rooms/:id/close → {ok}
+  async exportRoom(id, options) {}       // GET  /api/admin/rooms/[history/]id/export → {ok,blob,filename}
   // ---- Socket（玩家）----
   on(e, cb) {}
   off(e, cb) {}
@@ -175,6 +176,15 @@ class MockClient extends GameClient {
     delete this.rooms[id];
     return { ok: true };
   }
+  async exportRoom(id, { history = false } = {}) {
+    await delay(120);
+    const g = this._guardAdmin(); if (g) return g;
+    const room = this.rooms[id];
+    if (!room || (history && room.status !== 'ended')) return { ok: false, error: '房间记录不存在', status: 404 };
+    const content = `# 共叙故事：${room.code}\n\n- **状态**：${room.status}\n\n## 故事正文\n\n${room.currentNode?.narrative || '故事尚未开始。'}\n`;
+    return { ok: true, blob: new Blob([content], { type: 'text/markdown;charset=utf-8' }), filename: `共叙-${room.code}.md` };
+  }
+
   async getRoom(id) {
     await delay(120);
     const g = this._guardAdmin(); if (g) return g;
@@ -648,6 +658,28 @@ class SocketClient extends GameClient {
   async deleteRoomHistory(id) { return this._req('DELETE', '/api/admin/rooms/history/' + encodeURIComponent(id)); }
   async getRoom(id) { return this._req('GET', '/api/admin/rooms/' + encodeURIComponent(id)); }
   async closeRoom(id) { return this._req('POST', '/api/admin/rooms/' + encodeURIComponent(id) + '/close'); }
+
+  async exportRoom(id, { history = false } = {}) {
+    const prefix = history ? '/api/admin/rooms/history/' : '/api/admin/rooms/';
+    const res = await fetch(this.baseUrl + prefix + encodeURIComponent(id) + '/export', {
+      method: 'GET', credentials: 'include',
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      return { ok: false, ...data, status: res.status };
+    }
+    const disposition = res.headers.get('content-disposition') || '';
+    const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+    let filename = '共叙-故事.md';
+    if (encoded) {
+      try { filename = decodeURIComponent(encoded); } catch {}
+    }
+    return {
+      ok: true,
+      blob: await res.blob(),
+      filename,
+    };
+  }
 
   async join(payload) {
     const identity = {

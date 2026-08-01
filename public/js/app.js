@@ -103,6 +103,7 @@
 
   async function leaveCurrentRoom() {
     if (state.me) await client.leave();
+    clearGenerations();
     state.room = null;
     state.me = null;
     state.oppOffline = false;
@@ -171,8 +172,13 @@
   client.on('player:joined', () => render());
   client.on('player:ready', () => render());
   client.on('game:started', () => { state.game.starting = false; });
-  client.on('game:starting', () => { state.game.starting = true; render(); });
+  client.on('game:starting', () => {
+    state.game.starting = true;
+    beginGeneration('opening');
+    render();
+  });
   client.on('game:intro', ({ intro, round, confirmed }) => {
+    finishGeneration('opening');
     resetTurn();
     syncOpponentOffline();
     state.game = { phase: 'intro', intro, summary: null, next: { me: false, opp: false }, starting: false };
@@ -180,6 +186,8 @@
     showPlayerView('game');
   });
   client.on('game:round', (payload) => {
+    finishGeneration('round');
+    finishGeneration('preload');
     resetTurn();
     syncOpponentOffline();
     if (state.room) {
@@ -211,18 +219,23 @@
   });
   client.on('game:summary', (payload) => {
     syncOpponentOffline();
+    finishGeneration('summary');
     state.game.phase = 'summary';
     state.game.summary = payload;
     state.game.next = { me: false, opp: false };
     restoreNextConfirm(payload.confirmed);
+    if (payload.preloadStatus === 'loading') beginGeneration('preload');
     showPlayerView('game');
   });
   client.on('game:preload_status', ({ status }) => {
     if (state.game.summary) state.game.summary.preloadStatus = status;
+    if (status === 'ready') finishGeneration('preload');
+    else if (status === 'loading') beginGeneration('preload');
     if (state.game.phase === 'summary') render();
   });
   client.on('game:next_update', ({ role, confirmed }) => {
     if (state.me && role === OPP(state.me.role)) state.game.next.opp = confirmed;
+    if (state.game.next.me && state.game.next.opp) beginGeneration('round');
     render();
   });
   client.on('game:choice_update', ({ role, chosen, choiceText }) => {
@@ -233,10 +246,12 @@
     // 双方都提交 → 自动推进（无需手动点）
     if (state.turn.submitted && state.turn.oppSubmitted && !state.turn.advancing && state.game.phase === 'round') {
       state.turn.advancing = true;
+      beginGeneration('summary');
       render();
       client.advance().then((res) => {
         if (!res || !res.ok) {
           state.turn.advancing = false;
+          finishGeneration('summary');
           UI.toast((res && res.error) || '推进失败，请重试');
           render();
         }
@@ -248,11 +263,18 @@
   client.on('game:judging', () => {   // mock 附加事件（后端可选）
     state.turn.advancing = true;
     state.turn.judging = true;
+    finishGeneration('summary');
+    beginGeneration('ending');
     render();
   });
   client.on('game:ended', ({ ending }) => {
     if (state.room) state.room.ending = ending;
     state.oppOffline = false;
+    finishGeneration('opening');
+    finishGeneration('round');
+    finishGeneration('summary');
+    finishGeneration('preload');
+    finishGeneration('ending');
     showPlayerView('ending');
   });
 
@@ -454,8 +476,9 @@
       ]),
       UI.el('div', { class: 'room-item-meta', text: `A ${playerLine(room.players.A)}　B ${playerLine(room.players.B)}` }),
       UI.el('div', { class: 'room-item-meta', text: '创建于 ' + UI.formatTime(room.createdAt) }),
-      UI.el('div', { class: 'room-detail-row' }, [
+      UI.el('div', { class: 'room-detail-row room-actions' }, [
         UI.el('button', { class: 'btn btn-sm btn-ghost', type: 'button', onclick: () => toggleRoomDetail(item, room) }, [UI.icon('eye'), UI.el('span', { text: '查看进度' })]),
+        UI.el('button', { class: 'btn btn-sm btn-ghost', type: 'button', onclick: () => downloadStory(room, false) }, [UI.icon('download'), UI.el('span', { text: '导出故事' })]),
         room.status !== 'ended' ? UI.el('button', { class: 'btn btn-sm btn-ghost', type: 'button', onclick: () => closeRoom(room.id) }, [UI.icon('x'), UI.el('span', { text: '关闭' })]) : null,
       ]),
     ]);
@@ -472,12 +495,35 @@
         ]),
         UI.el('div', { class: 'history-actions' }, [
           UI.el('span', { class: 'badge ended', text: '已结束' }),
+          UI.el('button', { class: 'icon-btn', type: 'button', title: '导出 Markdown 故事', onclick: () => downloadStory(record, true) }, [UI.icon('download')]),
           UI.el('button', { class: 'icon-btn history-delete', type: 'button', title: '删除这条历史记录', onclick: () => deleteHistoryRecord(record) }, [UI.icon('trash-2')]),
         ]),
       ]),
       record.ending?.title ? UI.el('div', { class: 'room-item-meta', text: '结局：' + record.ending.title }) : null,
       UI.el('div', { class: 'room-item-meta', text: `结束于 ${UI.formatTime(record.endedAt || record.createdAt)} · ${formatBytes(record.fileBytes)}` }),
     ]);
+  }
+
+  async function downloadStory(record, history) {
+    const result = await adminCall(() => client.exportRoom(record.id, { history }));
+    if (!result) return;
+    if (!result.ok || !result.blob) {
+      UI.toast(result.error || '导出失败');
+      return;
+    }
+    const url = URL.createObjectURL(result.blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = result.filename || `共叙-${record.code || '故事'}.md`;
+    link.hidden = true;
+    document.body.appendChild(link);
+    try {
+      link.click();
+      UI.toast('Markdown 故事已导出');
+    } finally {
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
   }
 
   async function deleteHistoryRecord(record) {
@@ -677,7 +723,7 @@
     if (!myPlayer) return;
     // 房主已点开始、DM 正在生成开场：双方都显示等待，避免对方界面毫无反馈
     if (state.game.starting) {
-      acts.appendChild(waitLine('DM 正在生成开场信息…'));
+      acts.appendChild(generationLoader('opening'));
       return;
     }
     // 游戏进行中（断线重连过渡，后端会推送 game 事件并自动切到对局界面）
@@ -702,10 +748,12 @@
           if (!canStart) return;
           // 立即反馈：真实 AI 生成开场需要一点时间
           UI.clear(acts);
-          acts.appendChild(waitLine('DM 正在生成开场信息…'));
+          beginGeneration('opening');
+          acts.appendChild(generationLoader('opening'));
           UI.refreshIcons();
           const res = await client.startGame();
           if (!res || !res.ok) {
+            finishGeneration('opening');
             UI.toast((res && res.error) || '开始失败，请重试');
             render();
           }
@@ -723,8 +771,9 @@
       ]));
     }
     if (isWaiting && room.openingStatus === 'loading') {
-      acts.appendChild(UI.el('p', { class: 'hint', text: 'DM 正在后台预生成开场，准备期间无需等待。' }));
+      acts.appendChild(generationLoader('opening', { compact: true, title: 'DM 正在后台预生成开场' }));
     } else if (isWaiting && room.openingStatus === 'ready') {
+      finishGeneration('opening');
       acts.appendChild(UI.el('p', { class: 'hint', text: '开场已预加载，可以立即开始。' }));
     } else if (isHost && !canStart) {
       const hint = !isWaiting
@@ -756,6 +805,117 @@
   // ============ 5. 游戏主界面 ============
   let narrativeTyping = { active: false, text: '' };
   let typedDone = { narrative: null, summary: null };
+
+  const generationStarts = Object.create(null);
+  const GENERATION_PHASES = {
+    opening: {
+      title: 'DM 正在准备开场',
+      stages: [
+        [0, 8, '读取世界书与角色卡'],
+        [3, 24, '整理两位玩家的背景资料'],
+        [7, 46, '构思开场冲突与故事线索'],
+        [13, 68, '编排世界背景与初始选择'],
+        [22, 84, '等待模型完成开场长文本'],
+      ],
+    },
+    round: {
+      title: 'DM 正在续写下一回合',
+      stages: [
+        [0, 10, '读取上一回合结果'],
+        [3, 28, '整理角色状态与共同线索'],
+        [7, 50, '推演选择带来的后续变化'],
+        [13, 70, '编排新场景与行动选项'],
+        [22, 85, '等待模型完成回合内容'],
+      ],
+    },
+    summary: {
+      title: 'DM 正在结算本回合',
+      stages: [
+        [0, 10, '汇总双方提交的行动'],
+        [3, 30, '判定行动结果与相互影响'],
+        [7, 52, '更新角色状态与故事进度'],
+        [13, 72, '编写本回合反馈'],
+        [22, 86, '检查是否触发故事结局'],
+      ],
+    },
+    preload: {
+      title: 'DM 正在后台准备下一回合',
+      stages: [
+        [0, 12, '读取刚刚发生的故事'],
+        [3, 32, '整理仍未解决的线索'],
+        [7, 54, '推演下一幕的发展方向'],
+        [13, 74, '生成新叙事与行动选项'],
+        [22, 87, '等待模型完成预生成内容'],
+      ],
+    },
+    ending: {
+      title: 'DM 正在判定故事结局',
+      stages: [
+        [0, 12, '回顾整局故事与关键选择'],
+        [4, 34, '汇总角色关系与最终状态'],
+        [9, 58, '判定结局走向'],
+        [15, 76, '撰写最后的故事篇章'],
+        [24, 88, '等待模型完成结局'],
+      ],
+    },
+  };
+
+  function beginGeneration(kind) {
+    if (!generationStarts[kind]) generationStarts[kind] = Date.now();
+  }
+
+  function finishGeneration(kind) {
+    delete generationStarts[kind];
+  }
+
+  function clearGenerations() {
+    Object.keys(generationStarts).forEach((kind) => delete generationStarts[kind]);
+  }
+
+  function generationLoader(kind, { compact = false, title } = {}) {
+    const config = GENERATION_PHASES[kind] || GENERATION_PHASES.round;
+    beginGeneration(kind);
+    const fill = UI.el('div', { class: 'dm-generation-fill' });
+    const percent = UI.el('b', { text: '约 8%' });
+    const stage = UI.el('span', { class: 'dm-generation-stage', text: config.stages[0][2] });
+    const elapsed = UI.el('span', { text: '已等待 0 秒' });
+    const card = UI.el('div', { class: 'dm-generation' + (compact ? ' is-compact' : ''), role: 'status', 'aria-live': 'polite' }, [
+      UI.el('div', { class: 'dm-generation-orbit', 'aria-hidden': 'true' }, [
+        UI.el('span', { class: 'dm-orbit-ring ring-a' }),
+        UI.el('span', { class: 'dm-orbit-ring ring-b' }),
+        UI.el('span', { class: 'dm-orbit-core' }, [UI.icon('dices')]),
+      ]),
+      UI.el('div', { class: 'dm-generation-copy' }, [
+        UI.el('div', { class: 'dm-generation-head' }, [UI.el('strong', { text: title || config.title }), percent]),
+        stage,
+        UI.el('div', { class: 'dm-generation-track' }, [fill]),
+        UI.el('div', { class: 'dm-generation-meta' }, [UI.el('span', { text: '估算进度' }), elapsed]),
+      ]),
+    ]);
+    let wasConnected = false;
+    const update = () => {
+      if (card.isConnected) wasConnected = true;
+      else if (wasConnected) return clearInterval(timer);
+      const startedAt = generationStarts[kind] || Date.now();
+      const seconds = Math.max(0, (Date.now() - startedAt) / 1000);
+      const stages = config.stages;
+      let index = stages.findLastIndex((item) => seconds >= item[0]);
+      if (index < 0) index = 0;
+      const current = stages[index];
+      const next = stages[index + 1];
+      const ratio = next ? Math.min(1, (seconds - current[0]) / (next[0] - current[0])) : Math.min(1, (seconds - current[0]) / 35);
+      const target = next ? next[1] : 93;
+      const value = Math.min(93, current[1] + (target - current[1]) * ratio);
+      fill.style.width = value.toFixed(1) + '%';
+      percent.textContent = '约 ' + Math.round(value) + '%';
+      stage.textContent = seconds >= 50 ? '模型响应较慢，但仍在继续等待' : current[2];
+      const whole = Math.floor(seconds);
+      elapsed.textContent = whole < 60 ? `已等待 ${whole} 秒` : `已等待 ${Math.floor(whole / 60)} 分 ${whole % 60} 秒`;
+    };
+    const timer = setInterval(update, 500);
+    update();
+    return card;
+  }
 
   function renderGame() {
     const room = state.room;
@@ -797,7 +957,7 @@
     const na = $('narrative-area');
     UI.clear(na);
     na.className = 'narrative waiting';
-    na.appendChild(UI.el('div', { class: 'ai-tag' }, [UI.icon('loader', 'icon-spin'), UI.el('span', { text: 'DM 正在准备开场…' })]));
+    na.appendChild(generationLoader('opening'));
     UI.clear($('my-choices')); UI.clear($('opp-choices')); UI.clear($('action-bar')); UI.clear($('status-panel'));
   }
 
@@ -946,10 +1106,14 @@
       }
       if (summary.preloadStatus) {
         const preloadReady = summary.preloadStatus === 'ready';
-        na.appendChild(UI.el('div', { class: 'round-preload-status' + (preloadReady ? ' ready' : '') }, [
-          UI.icon(preloadReady ? 'check-circle-2' : 'loader', preloadReady ? '' : 'icon-spin'),
-          UI.el('span', { text: preloadReady ? '下一回合已预加载' : 'DM 正在后台准备下一回合…' }),
-        ]));
+        if (preloadReady) {
+          finishGeneration('preload');
+          na.appendChild(UI.el('div', { class: 'round-preload-status ready' }, [
+            UI.icon('check-circle-2'), UI.el('span', { text: '下一回合已预加载' }),
+          ]));
+        } else {
+          na.appendChild(generationLoader('preload', { compact: true }));
+        }
       }
       renderStatusPanel(summary.storyState, state.me.role);
     }
@@ -963,6 +1127,11 @@
     const g = state.game;
     const meConfirmed = g.next.me;
     const oppConfirmed = g.next.opp;
+    if (meConfirmed && oppConfirmed) {
+      beginGeneration('round');
+      bar.appendChild(generationLoader('round', { compact: true }));
+      return;
+    }
     const btnText = options.disabled
       ? options.disabledText
       : meConfirmed
@@ -974,9 +1143,11 @@
       onclick: async () => {
         g.next.me = true;
         render();
+        if (g.next.opp) beginGeneration('round');
         const res = await client.next();
         if (!res || !res.ok) {
           g.next.me = false;
+          finishGeneration('round');
           UI.toast((res && res.error) || '继续失败，请重试');
           render();
         }
@@ -1235,11 +1406,11 @@
     UI.clear(bar);
     const t = state.turn;
     if (t.advancing && t.judging) {
-      bar.appendChild(waitLine('DM 正在判定结局…'));
+      bar.appendChild(generationLoader('ending'));
       return;
     }
     if (t.advancing) {
-      bar.appendChild(waitLine('DM 正在编织剧情…'));
+      bar.appendChild(generationLoader('summary'));
       return;
     }
     if (t.submitted && !t.oppSubmitted) {
@@ -1248,7 +1419,8 @@
     }
     if (t.submitted && t.oppSubmitted) {
       // 双方已提交 → 自动推进中
-      bar.appendChild(waitLine('DM 正在编织本回合结果…'));
+      beginGeneration('summary');
+      bar.appendChild(generationLoader('summary'));
       return;
     }
     bar.appendChild(UI.el('button', {

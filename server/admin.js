@@ -4,6 +4,19 @@ import {
   archiveCurrentRound, listRoomHistory, saveRoomHistory, removeActiveRoom, roomHistoryStorage, deleteRoomHistory, playerDisplayName,
 } from './game.js';
 import { config, saveConfig } from './config.js';
+import { buildStoryMarkdown, storyExportFilename } from './story-export.js';
+
+function sendStoryExport(res, record) {
+  const worldbookName = getWorldbook(record.worldbookId)?.name || record.worldbookName || record.worldbookId;
+  const filename = storyExportFilename(record.code);
+  const fallbackName = `story-${String(record.code || 'export').replace(/[^A-Za-z0-9_-]/g, '') || 'export'}.md`;
+  res.set({
+    'Content-Type': 'text/markdown; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${fallbackName}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    'Cache-Control': 'no-store',
+  });
+  res.send(buildStoryMarkdown(record, { worldbookName }));
+}
 
 /** 管理员后台 API（全部挂在 requireAdmin 中间件之后） */
 export function createAdminRouter() {
@@ -84,6 +97,11 @@ export function createAdminRouter() {
     res.json({ history: listRoomHistory(), storage: roomHistoryStorage() });
   });
 
+  router.get('/rooms/history/:id/export', (req, res) => {
+    const record = listRoomHistory().find((item) => item.id === req.params.id);
+    if (!record) return res.status(404).json({ error: '历史记录不存在' });
+    sendStoryExport(res, record);
+  });
   router.delete('/rooms/history/:id', (req, res) => {
     if (!deleteRoomHistory(req.params.id)) return res.status(404).json({ error: '历史记录不存在' });
     res.json({ ok: true, storage: roomHistoryStorage() });
@@ -110,6 +128,12 @@ export function createAdminRouter() {
       history: room.history,
       ending: room.ending,
     });
+  });
+
+  router.get('/rooms/:id/export', (req, res) => {
+    const room = rooms.get(req.params.id);
+    if (!room || room.status === 'ended') return res.status(404).json({ error: '房间不存在' });
+    sendStoryExport(res, room);
   });
 
   router.post('/rooms/:id/close', (req, res) => {

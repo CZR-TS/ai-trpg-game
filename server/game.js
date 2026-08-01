@@ -143,6 +143,7 @@ export function createRoom({ worldbookId, code, roomCodeLen = 8 }) {
     round: 0,
     progress: 0,
     storyState: {},
+    intro: null,
     currentNode: null,
     currentSummary: null,
     nextConfirm: { A: false, B: false },
@@ -248,6 +249,7 @@ export function saveRoomHistory(room) {
       },
       round: room.round,
       progress: room.progress,
+      intro: room.intro || null,
       history: room.history.map((item) => ({
         round: item.round,
         narrative: String(item.narrative || '').slice(0, 12000),
@@ -305,6 +307,7 @@ export function saveActiveRoom(room) {
       round: room.round,
       progress: room.progress,
       storyState: room.storyState,
+      intro: room.intro || null,
       currentNode: room.currentNode,
       currentSummary: room.currentSummary,
       nextConfirm: room.nextConfirm,
@@ -549,6 +552,7 @@ export async function startRoom(room, config, charCard) {
     room.openingNode = null;
     room.openingStatus = 'used';
     room.currentNode = node;
+    room.intro = node.intro || null;
     room.round = 1;
     room.progress = 0;
     room.storyState = organizeStoryState(node.story_state, room.players);
@@ -778,6 +782,11 @@ async function generateNode(room, config, charCard, { kind, history, choiceA, ch
   if (raw && !parsed) console.warn('[LLM] 重试后仍解析失败，降级为演示叙事');
   if (!raw) console.warn('[LLM] 无返回（可能超时或接口异常），kind=' + kind);
   const node = normalizeNode(parsed, {
+    intro: kind === 'intro' ? {
+      world: `${room.worldbook.description || room.worldbook.name || '一个等待书写的世界。'}\n\n命运的齿轮已经转动，两位冒险者即将在这里共同写下故事。`,
+      roleA: `**${playerDisplayName(room.players.A) || '玩家 A'}**，你的旅程从此刻开始。`,
+      roleB: `**${playerDisplayName(room.players.B) || '玩家 B'}**，你的选择将改变故事。`,
+    } : null,
     narrative: mockNarrative(room.worldbook),
     choicesA: ['继续前行', '停留观察'],
     choicesB: ['继续前行', '停留观察'],

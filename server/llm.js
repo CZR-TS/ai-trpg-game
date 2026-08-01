@@ -190,11 +190,12 @@ export function normalizeNode(raw, fallback = {}) {
         text: normalizeNarrativeText(raw.ending.text),
       }
     : null;
-  const intro = raw?.intro && !Array.isArray(raw.intro) && typeof raw.intro === 'object'
+  const introSource = raw?.intro && !Array.isArray(raw.intro) && typeof raw.intro === 'object' ? raw.intro : fallback.intro;
+  const intro = introSource && !Array.isArray(introSource) && typeof introSource === 'object'
     ? {
-        world: normalizeNarrativeText(raw.intro.world),
-        roleA: normalizeNarrativeText(raw.intro.roleA, { splitLong: false }),
-        roleB: normalizeNarrativeText(raw.intro.roleB, { splitLong: false }),
+        world: normalizeNarrativeText(introSource.world),
+        roleA: normalizeNarrativeText(introSource.roleA, { splitLong: false }),
+        roleB: normalizeNarrativeText(introSource.roleB, { splitLong: false }),
       }
     : null;
   const summary =
