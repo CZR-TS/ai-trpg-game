@@ -99,7 +99,7 @@ function maybePreloadOpening(room) {
   pending.then(() => {
     emitRoomState(room);
   }).catch((error) => {
-    console.warn('[GAME] 开场预加载失败：', errorMessage(error));
+    console.warn('[GAME] 开场准备失败：', errorMessage(error));
     emitRoomState(room);
   });
 }
@@ -219,11 +219,16 @@ io.on('connection', (socket) => {
     room.chosen[role] = choice;
     room.submitted[role] = true;
     game.saveActiveRoom(room);
-    const reveal = room.currentNode.reveal !== false;
-    io.to(room.id).emit('game:choice_update', {
-      role,
-      chosen: true,
-      choiceText: reveal ? choice : undefined,
+    emitPlayerEvent(room, 'game:choice_update', (viewerRole) => {
+      const opponentRole = viewerRole === 'A' ? 'B' : 'A';
+      const viewerSubmitted = !!room.submitted[viewerRole];
+      const opponentSubmitted = !!room.submitted[opponentRole];
+      return {
+        role,
+        chosen: true,
+        choiceText: viewerRole !== role && viewerSubmitted ? choice : undefined,
+        opponentChoiceText: viewerSubmitted && opponentSubmitted ? room.chosen[opponentRole] : undefined,
+      };
     });
     ack?.({ ok: true });
   });
@@ -250,7 +255,9 @@ io.on('connection', (socket) => {
       }
     } catch (error) {
       console.error('[GAME] 推进失败：', error);
-      ack?.({ ok: false, error: '推进失败，请重试' });
+      const message = '推进失败，请重新结算';
+      ack?.({ ok: false, error: message });
+      io.to(room.id).emit('game:advance_failed', { error: message });
     }
   });
 
@@ -351,6 +358,7 @@ function nodeView(room, node, viewerRole) {
     progress: room.progress,
     submitted: { A: !!room.submitted.A, B: !!room.submitted.B },
     ownChosen: room.chosen[viewerRole] || null,
+    opponentChosen: room.submitted[viewerRole] ? room.chosen[viewerRole === 'A' ? 'B' : 'A'] || null : null,
   };
 }
 

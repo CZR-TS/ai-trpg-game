@@ -1,6 +1,7 @@
 {
   "name": "我的世界书",
   "description": "在此填写你的世界书。兼容 SillyTavern 格式。",
+  "opening_background": "这里填写同一世界所有游戏共用的固定初始背景。玩家创建角色后，AI 再根据角色资料生成第一回合。",
   "scan_depth": null,
   "token_budget": null,
   "recursive_scanning": true,

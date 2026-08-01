@@ -7,9 +7,14 @@ export function loadWorldbookFile(filePath) {
   if (!data || Array.isArray(data) || typeof data.entries !== 'object' || Array.isArray(data.entries)) {
     throw new Error('世界书格式无效：entries 必须为对象');
   }
+  if (typeof data.opening_background !== 'string' || !data.opening_background.trim()) {
+    throw new Error('世界书格式无效：opening_background 为必填的固定开场背景');
+  }
   const entries = Object.values(data.entries).map(normalizeEntry);
   return {
     name: data.name || path.basename(filePath, '.json'),
+    description: typeof data.description === 'string' ? data.description : '',
+    opening_background: data.opening_background.trim(),
     recursive_scanning: data.recursive_scanning !== false,
     scan_depth: Number.isInteger(data.scan_depth) ? Math.max(0, data.scan_depth) : null,
     token_budget: Number.isFinite(Number(data.token_budget)) ? Math.max(0, Number(data.token_budget)) : null,

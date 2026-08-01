@@ -18,15 +18,28 @@ assert.ok(room.worldbook?.entries?.length, '房间必须持有已加载世界书
 assert.equal(room.code.length, 10, '房间码长度配置应生效');
 assert.throws(() => game.createRoom({ worldbookId: 'fantasy-example', code: room.code }), /已存在/);
 assert.throws(() => game.importWorldbook({ id: '..\/..\/config\/config', content: { entries: {} } }), /id/);
+assert.throws(
+  () => game.importWorldbook({ id: 'missing-opening-test', content: { entries: {} } }),
+  /opening_background/,
+  '所有导入世界书都必须提供固定开场背景'
+);
+assert.equal(game.isEndingRequested('继续调查遗迹', '守住入口'), false, '普通行动不得触发结局');
+assert.equal(game.isEndingRequested('我不想结束故事', '继续前进'), false, '否定结束意图不得触发结局');
+assert.equal(game.isEndingRequested('结束这场冒险，进入最终结局', '向同伴告别'), true, '玩家明确提出结束时才允许结局');
 
 room.players.A = { name: 'A', ready: true, token: 'a', sockId: null };
 room.players.B = { name: 'B', ready: true, token: 'b', sockId: null };
 const opening = await game.startRoom(room, config, character);
 assert.equal(room.status, 'playing');
 assert.equal(room.progress, 0, '角色塑造阶段不应提前增加故事进度');
-assert.ok(opening.choices_A.length && opening.choices_B.length);
+assert.equal(opening.intro.world, room.worldbook.opening_background, '开场必须直接使用世界书固定背景');
+assert.equal(opening.choices_A.length, 0, '角色创建前不应调用 AI 生成选项');
+game.updatePlayerProfile(room, 'A', { displayName: 'A' });
+game.updatePlayerProfile(room, 'B', { displayName: 'B' });
+const firstRound = (await game.proceedNext(room, config, character)).node;
+assert.ok(firstRound.choices_A.length && firstRound.choices_B.length);
 
-room.chosen = { A: opening.choices_A[0], B: opening.choices_B[0] };
+room.chosen = { A: firstRound.choices_A[0], B: firstRound.choices_B[0] };
 room.submitted = { A: true, B: true };
 const previousHistoryLength = room.history.length;
 const savedWorldbook = room.worldbook;
@@ -40,10 +53,16 @@ const preloadRoom = game.createRoom({ worldbookId: 'fantasy-example' });
 preloadRoom.players.A = { name: '预载甲', ready: true, sockId: null };
 preloadRoom.players.B = { name: '预载乙', ready: true, sockId: null };
 const preloadOpening = await game.startRoom(preloadRoom, config, character);
-preloadRoom.chosen = { A: preloadOpening.choices_A[0], B: preloadOpening.choices_B[0] };
+assert.equal(preloadOpening.intro.world, preloadRoom.worldbook.opening_background);
+game.updatePlayerProfile(preloadRoom, 'A', { displayName: '预载甲' });
+game.updatePlayerProfile(preloadRoom, 'B', { displayName: '预载乙' });
+const preloadFirstRound = (await game.proceedNext(preloadRoom, config, character)).node;
+preloadRoom.chosen = { A: preloadFirstRound.choices_A[0], B: preloadFirstRound.choices_B[0] };
 preloadRoom.submitted = { A: true, B: true };
+preloadRoom.progress = 1;
 const preloadSummary = await game.advanceRoom(preloadRoom, config, character);
 assert.equal(preloadSummary.type, 'summary');
+assert.equal(preloadRoom.status, 'playing', '故事进度达到 100% 不能自动结束游戏');
 assert.equal(preloadRoom.phase, 'summary');
 assert.deepEqual(preloadRoom.nextConfirm, { A: false, B: false }, '无人点击下一步时也应开始预加载');
 assert.ok(preloadRoom.nextRoundPromise || preloadRoom.nextRoundNode, '反馈生成后必须立即存在下一回合预加载任务');
@@ -148,6 +167,33 @@ try {
 } finally {
   globalThis.fetch = originalFetch;
 }
+
+const aiFailureRoom = game.createRoom({ worldbookId: 'fantasy-example' });
+aiFailureRoom.players.A = { name: '失败甲', ready: true, sockId: null };
+aiFailureRoom.players.B = { name: '失败乙', ready: true, sockId: null };
+await game.startRoom(aiFailureRoom, config, character);
+game.updatePlayerProfile(aiFailureRoom, 'A', { displayName: '失败甲' });
+game.updatePlayerProfile(aiFailureRoom, 'B', { displayName: '失败乙' });
+let failedFetches = 0;
+try {
+  globalThis.fetch = async () => {
+    failedFetches += 1;
+    throw new Error('模拟接口超时');
+  };
+  await assert.rejects(
+    () => game.proceedNext(aiFailureRoom, {
+      ...config,
+      ai: { baseURL: 'https://example.invalid', apiKey: 'test-only', model: 'test', temperature: 0, maxTokens: 1024, timeoutMs: 5000 },
+    }, character),
+    /AI 请求失败，请重试/
+  );
+} finally {
+  globalThis.fetch = originalFetch;
+}
+assert.equal(failedFetches, 3, '真实 AI 调用失败时应自动尝试三次');
+assert.equal(aiFailureRoom.phase, 'intro', '重试失败后必须停留在原阶段，不能写入演示回合');
+assert.equal(aiFailureRoom.progress, 0, '重试失败后不得增加故事进度');
+assert.equal(aiFailureRoom.generationProgress, null, '失败任务不得残留为房间当前生成状态');
 assert.deepEqual(normalized.story_state, { flag: true });
 assert.match(buildHistoryText([{ round: 1, narrative: 'n', choiceA: 'a', choiceB: 'b', storyState: { hp: 9 } }], 6), /"hp":9/);
 assert.equal(
@@ -243,12 +289,18 @@ assert.equal(activated.filter((entry) => entry.group === 'g').length, 1, '递归
 const loaded = loadWorldbookFile(path.resolve('worldbook/examples/fantasy-example/worldbook.json'));
 assert.equal(loaded.scan_depth, 4);
 assert.equal(loaded.token_budget, 2000);
+assert.match(loaded.opening_background, /艾尔登大陆/, '世界书必须加载固定开场背景');
+const worldbookSchema = JSON.parse(await readFile(path.resolve('worldbook/schema.json'), 'utf8'));
+assert.ok(worldbookSchema.required.includes('opening_background'), '世界书 Schema 必须强制固定开场背景字段');
+assert.equal(worldbookSchema.properties.opening_background.minLength, 1, '固定开场背景不得为空字符串');
 
 const pageHtml = await readFile(path.resolve('public/index.html'), 'utf8');
 const pageCss = await readFile(path.resolve('public/css/style.css'), 'utf8');
 const pageUi = await readFile(path.resolve('public/js/ui.js'), 'utf8');
 const pageClient = await readFile(path.resolve('public/js/client.js'), 'utf8');
 const pageApp = await readFile(path.resolve('public/js/app.js'), 'utf8');
+const gameServer = await readFile(path.resolve('server/game.js'), 'utf8');
+const socketServer = await readFile(path.resolve('server/index.js'), 'utf8');
 const deployUpdate = await readFile(path.resolve('deploy/update.sh'), 'utf8');
 assert.match(pageHtml, /id="theme-toggle"[^>]+data-action="theme-toggle"/, '顶部必须提供主题切换按钮');
 assert.match(pageHtml, /<button class="brand"[\s\S]*?<span>共叙<\/span>/, '顶部品牌必须包含“共叙”文字');
@@ -257,7 +309,7 @@ assert.match(pageCss, /:root\[data-theme='dark'\]/, '样式表必须包含暗色
 assert.match(pageCss, /\.topbar-actions\s*\{/, '顶部操作区必须为品牌和主题按钮预留布局');
 assert.match(pageApp, /localStorage\.setItem\(THEME_KEY, next\)/, '主题选择必须写入本地存储');
 assert.match(pageApp, /dark \? 'sun' : 'moon'/, '主题按钮必须使用 Lucide 的太阳/月亮图标');
-assert.match(pageHtml, /style\.css\?v=20260801-22/, '反馈正文间距更新后必须刷新静态资源版本');
+assert.match(pageHtml, /style\.css\?v=20260801-23/, '本轮界面更新后必须刷新静态资源版本');
 assert.match(pageHtml, /入场昵称尽量独特[\s\S]*重连时仍用此昵称[\s\S]*剧情昵称不同/, '玩家入口必须用两行短句解释身份昵称');
 assert.match(pageCss, /\.offline-banner\[hidden\]\s*\{\s*display:\s*none/, '未离线时不得显示空的警告横幅');
 assert.match(pageApp, /async \(event\)[\s\S]*client\.saveProfile/, '开场页必须提供角色资料保存交互');
@@ -281,7 +333,11 @@ assert.match(pageApp, /game:generation_progress/, '前端必须订阅真实生�
 assert.match(pageApp, /正在接收剧情内容/, '前端必须展示真实流式接收状态');
 assert.match(pageApp, /completed \/ total \* 100/, '加载状态条必须只按真实完成字段计算长度');
 assert.doesNotMatch(pageApp, /估算进度|Math\.min\(93,/, '前端不得保留时间估算百分比');
-assert.match(pageApp, /UI\.icon\('coins'\)[\s\S]*UI\.icon\('database'\)[\s\S]*UI\.icon\('layers-3'\)/, 'Token 栏必须用图标紧凑展示总量、缓存和上下文');
+assert.match(pageApp, /UI\.icon\('layers-3'\)[\s\S]*UI\.icon\('coins'\)[\s\S]*UI\.icon\('database'\)/, 'Token 栏必须依次展示上下文窗口、本次 Token 与缓存数据');
+assert.match(pageApp, /contextWindowTokens[\s\S]*lastContextTokens[\s\S]*lastRequestTokens[\s\S]*lastCacheHitTokens/, 'Token 栏必须使用约定的本次与上下文字段');
+assert.match(gameServer, /MODEL_CONTEXT_WINDOW_TOKENS = 1_000_000/, '上下文窗口总长度必须固定为 1M');
+assert.match(pageApp, /cacheHitTokens \/ current\.promptTokens \* 100/, '第三项必须计算本局累计缓存率');
+assert.doesNotMatch(pageApp, /缓存命中|缓存率/, '三项数据旁不得增加缓存文字标签');
 assert.match(pageApp, /function tokenUsageNode[\s\S]*?\r?\n  \}\r?\n\r?\n  function legacyCopy/, 'Token 统计组件必须位于可被各玩家视图调用的作用域');
 assert.match(pageApp, /if \(res\.room\) state\.room = res\.room/, '加入成功后必须立即采用响应中的房间状态');
 assert.match(pageClient, /game:generation_progress/, 'Socket 客户端必须转发真实生成事件');
@@ -291,7 +347,16 @@ assert.match(pageCss, /prefers-reduced-motion:\s*reduce/, '加载动画必须尊
 assert.match(pageApp, /refreshGenerationCards\(progress\.kind\)/, '流式更新必须原位刷新加载卡，不能反复重建动画');
 assert.match(pageApp, /data-generation-current[\s\S]*data-generation-progress/, '生成状态条必须只突出当前项目和真实完成进度');
 assert.match(pageApp, /GENERATION_HINTS[\s\S]*检查下一幕与前文是否连贯/, '生成卡必须提供丰富且与当前任务相关的提示');
-assert.match(pageApp, /下一回合已就绪[\s\S]*正在为双方切换到新场景/, '预加载完成后必须显示进入状态，不能继续声称正在续写');
+assert.doesNotMatch(pageApp, /下一回合已就绪[\s\S]*正在为双方切换到新场景/, '反馈页与操作栏不能再生成重复的下一回合状态框');
+assert.match(pageApp, /g\.phase !== 'summary'\) bar\.appendChild\(generationLoader\('round'/, '反馈页双方确认后不得追加第二张生成卡');
+assert.match(pageApp, /state\.me\?\.role === 'A'[\s\S]*client\.advance\(\)/, '双方提交后只允许一个客户端发起推进');
+assert.match(pageApp, /value: state\.turn\.customText \|\| ''[\s\S]*oninput: \(e\) => \{ state\.turn\.customText = e\.target\.value; \}/, '输入草稿必须保存在回合状态中，不能因对方更新或自己提交被清空');
+assert.doesNotMatch(gameServer, /room\.progress\s*>=\s*1/, '后端不得按故事进度自动结束');
+assert.doesNotMatch(pageClient, /room\.progress\s*>=\s*1/, 'Mock 流程也不得按故事进度自动结束');
+assert.match(socketServer, /viewerSubmitted[\s\S]*opponentChoiceText/, '服务端必须按查看者是否已经提交来发送对方选择');
+assert.match(gameServer, /const demoMode = !config\.ai\.apiKey[\s\S]*if \(!parsed && !demoMode\)[\s\S]*throw new Error/, '配置真实 AI 后生成失败必须报错，不能切换演示内容');
+assert.match(pageApp, /advanceFailed[\s\S]*text: '重新结算'/, '结算失败后必须显示明确的重新结算按钮');
+assert.match(gameServer, /const allowEnding = isEndingRequested[\s\S]*if \(!allowEnding\) node\.ending = null/, '玩家未明确要求时后端必须丢弃 AI 结局');
 assert.match(pageCss, /\.dm-generation\.is-compact\s*\{[\s\S]*grid-template-columns:\s*22px/, '后台预加载状态条必须进一步缩小');
 assert.match(pageCss, /\.dm-generation-track\s*\{/, '加载状态条必须用细进度线展示真实字段完成情况');
 assert.doesNotMatch(pageApp, /data-generation-sections/, '加载状态条不得再平铺三至五个固定字段标签');
@@ -302,4 +367,4 @@ assert.match(deployUpdate, /cp -- "\$SOURCE_ARCHIVE"/, '服务器更新脚本必
 assert.doesNotMatch(deployUpdate, /github\.com|ARCHIVE_URL/, '服务器更新脚本不得访问 GitHub');
 console.log('后端单元测试通过');
 
-for (const testRoom of [room, preloadRoom, introRoom, brokenRoom]) game.removeActiveRoom(testRoom.id);
+for (const testRoom of [room, preloadRoom, introRoom, brokenRoom, aiFailureRoom]) game.removeActiveRoom(testRoom.id);

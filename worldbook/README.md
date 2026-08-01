@@ -2,7 +2,7 @@
 
 > **编写世界书前请先阅读 [GUIDE.md](./GUIDE.md)（编写规范指南）**：它包含字段要求、触发机制、关键词治理、递归防爆、随机事件与 group 用法等编写规范。
 
-本项目的世界书**兼容 SillyTavern（酒馆）的世界书 JSON 格式**，可直接导入酒馆导出的 `.json`，也可手动编写。
+本项目的条目结构**兼容 SillyTavern（酒馆）的世界书 JSON 格式**，但本项目额外强制要求顶层 `opening_background`。酒馆导出的文件若没有该字段，补充固定开场背景后才能导入。
 
 ## 顶层结构
 
@@ -10,6 +10,7 @@
 {
   "name": "世界书名称",
   "description": "可选描述",
+  "opening_background": "同一世界所有游戏共用的固定初始背景",
   "scan_depth": null,
   "token_budget": null,
   "recursive_scanning": false,
@@ -25,10 +26,19 @@
 |---|---|---|
 | name | string | 世界书名称 |
 | description | string | 描述（不进 prompt） |
+| opening_background | string | **必填且不能为空**；固定初始背景，开场直接展示，不调用 AI 重复生成 |
 | scan_depth | int\|null | 扫描最近 N 条消息找关键词；null=用全局默认 |
 | token_budget | int\|null | 世界书占用 token 上限；null=用全局默认 |
 | recursive_scanning | bool | 是否允许条目互相递归激活 |
 | entries | object | 条目字典，键为条目 uid（字符串） |
+
+## 固定背景与角色生成
+
+- `opening_background` 是同一个世界始终一致的开场背景，创建房间后直接读取并展示。
+- 所有世界书都必须填写非空的 `opening_background`；缺少该字段的文件不能导入或加载。
+- 玩家在背景页完成角色资料后，AI 才根据双方角色生成第一回合；固定背景不交给 AI 重新改写。
+- 更新世界背景时，直接修改 JSON 顶层的 `opening_background`，再重新导入或部署该世界书。
+- `opening_background` 只负责玩家最开始看到的固定介绍；后续世界设定仍由 `constant` 条目和关键词条目注入 AI。
 
 ## 条目（Entry）字段
 

@@ -14,7 +14,7 @@
     room: null,            // 房间全量镜像（room:state 推送）
     me: null,              // { role, name }
     game: { phase: 'intro', intro: null, summary: null, next: { me: false, opp: false }, starting: false }, // intro | round | summary | judging | ended
-    turn: { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, judging: false, customText: null },
+    turn: { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, advanceFailed: false, judging: false, customText: null },
     oppOffline: false, // 对方是否离线（游戏中）
   };
 
@@ -86,7 +86,7 @@
   }
 
   function resetTurn() {
-    state.turn = { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, judging: false, customText: null };
+    state.turn = { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, advanceFailed: false, judging: false, customText: null };
     typedDone = { narrative: null, summary: null };
   }
   // ============ 浏览器会话持久化（刷新/重开页面后自动恢复）============
@@ -140,20 +140,25 @@
 
   function tokenUsageNode(usage, extraClass = '') {
     const current = usage || {};
-    const total = formatTokens(current.totalTokens);
-    const cached = formatTokens(current.cacheHitTokens);
+    const windowTokens = formatTokens(current.contextWindowTokens || 1000000);
     const context = formatTokens(current.lastContextTokens);
-    const label = `本局总 Token ${total}，缓存命中 ${cached}，当前上下文 ${context}`;
+    const request = formatTokens(current.lastRequestTokens);
+    const requestCached = formatTokens(current.lastCacheHitTokens);
+    const cacheRate = current.promptTokens > 0
+      ? Math.min(100, Math.max(0, current.cacheHitTokens / current.promptTokens * 100))
+      : 0;
+    const label = `上下文窗口 ${windowTokens} / ${context}，本次 ${request}（缓存 ${requestCached}），本局缓存 ${cacheRate.toFixed(1)}%`;
     return UI.el('div', {
       class: 'token-usage' + (extraClass ? ' ' + extraClass : ''),
       title: label,
       'aria-label': label,
     }, [
-      UI.el('span', { class: 'token-usage-item' }, [UI.icon('coins'), UI.el('span', { text: total })]),
+      UI.el('span', { class: 'token-usage-item token-usage-context' }, [UI.icon('layers-3'), UI.el('span', { text: `${windowTokens} / ${context}` })]),
+      UI.el('span', { class: 'token-usage-item' }, [UI.icon('coins'), UI.el('span', { text: request })]),
       UI.el('span', { class: 'token-usage-paren', text: '（' }),
-      UI.el('span', { class: 'token-usage-item' }, [UI.icon('database'), UI.el('span', { text: cached })]),
+      UI.el('span', { class: 'token-usage-item' }, [UI.icon('database'), UI.el('span', { text: requestCached })]),
       UI.el('span', { class: 'token-usage-paren', text: '）' }),
-      UI.el('span', { class: 'token-usage-item token-usage-context' }, [UI.icon('layers-3'), UI.el('span', { text: context })]),
+      UI.el('span', { class: 'token-usage-item' }, [UI.icon('database'), UI.el('span', { text: cacheRate.toFixed(1) + '%' })]),
     ]);
   }
 
@@ -248,6 +253,7 @@
         }
       }
       state.turn.oppSubmitted = !!payload.submitted[OPP(meRole)];
+      if (state.turn.submitted && payload.opponentChosen) state.turn.oppChoiceText = payload.opponentChosen;
     }
     showPlayerView('game');
   });
@@ -272,26 +278,26 @@
     if (state.game.next.me && state.game.next.opp) beginGeneration('round');
     render();
   });
-  client.on('game:choice_update', ({ role, chosen, choiceText }) => {
+  client.on('game:choice_update', ({ role, chosen, choiceText, opponentChoiceText }) => {
     if (state.me && role !== state.me.role) {
       state.turn.oppSubmitted = chosen;
-      state.turn.oppChoiceText = choiceText || null;   // 封缄回合无 choiceText
+      if (choiceText) state.turn.oppChoiceText = choiceText;
     }
-    // 双方都提交 → 自动推进（无需手动点）
-    if (state.turn.submitted && state.turn.oppSubmitted && !state.turn.advancing && state.game.phase === 'round') {
-      state.turn.advancing = true;
-      beginGeneration('summary');
-      render();
-      client.advance().then((res) => {
-        if (!res || !res.ok) {
-          state.turn.advancing = false;
-          finishGeneration('summary');
-          UI.toast((res && res.error) || '推进失败，请重试');
-          render();
-        }
-      });
+    if (opponentChoiceText) {
+      state.turn.oppSubmitted = true;
+      state.turn.oppChoiceText = opponentChoiceText;
+    }
+    // 只由 A 端发起推进，避免双方同时请求而出现重复结算状态。
+    if (state.me?.role === 'A' && state.turn.submitted && state.turn.oppSubmitted && !state.turn.advancing && state.game.phase === 'round') {
+      requestRoundAdvance();
       return;
     }
+    render();
+  });
+  client.on('game:advance_failed', () => {
+    state.turn.advancing = false;
+    state.turn.advanceFailed = true;
+    finishGeneration('summary');
     render();
   });
   client.on('game:judging', () => {   // mock 附加事件（后端可选）
@@ -477,7 +483,8 @@
     try {
       const text = await file.text();
       const parsed = JSON.parse(text);
-      if (!parsed || typeof parsed !== 'object' || !parsed.name || typeof parsed.entries !== 'object') {
+      if (!parsed || typeof parsed !== 'object' || !parsed.name || typeof parsed.entries !== 'object'
+        || typeof parsed.opening_background !== 'string' || !parsed.opening_background.trim()) {
         throw new Error('格式不符');
       }
       const res = await client.importWorldbook({ name: parsed.name, content: parsed });
@@ -1054,14 +1061,6 @@
     const phase = state.game.phase;
     const roundLabel = phase === 'summary' ? '回合反馈' : phase === 'intro' ? '准备阶段' : '回合 ' + (node ? node.round : room.round);
     top.appendChild(UI.el('span', { class: 'top-round', text: roundLabel }));
-    if (node && phase === 'round') {
-      const reveal = node.reveal !== false;
-      top.appendChild(UI.el('span', { class: 'top-sep' }));
-      top.appendChild(UI.el('span', { class: 'reveal-chip' + (reveal ? ' open' : ''), title: reveal ? '本回合对方选择对你可见' : '本回合对方选择封缄，结束后揭晓' }, [
-        UI.icon(reveal ? 'eye' : 'eye-off'),
-        UI.el('span', { text: reveal ? '对方选择可见' : '对方选择封缄' }),
-      ]));
-    }
     top.appendChild(UI.el('div', { class: 'top-progress' }, [UI.progressBar(room.progress)]));
     top.appendChild(tokenUsageNode(room.tokenUsage, 'token-usage-top'));
   }
@@ -1238,17 +1237,6 @@
     renderNextButton('下一步', 'arrow-right');
   }
 
-  function nextRoundTransition() {
-    return UI.el('div', { class: 'next-round-transition', role: 'status', 'aria-live': 'polite' }, [
-      UI.el('span', { class: 'next-round-transition-icon' }, [UI.icon('circle-check-big')]),
-      UI.el('span', { class: 'next-round-transition-copy' }, [
-        UI.el('strong', { text: '下一回合已就绪' }),
-        UI.el('small', { text: '正在为双方切换到新场景…' }),
-      ]),
-      UI.icon('arrow-right', 'next-round-transition-arrow'),
-    ]);
-  }
-
   // 双方确认按钮（intro / summary 共用）
   function renderNextButton(label, iconName, options = {}) {
     const bar = $('action-bar');
@@ -1257,13 +1245,8 @@
     const meConfirmed = g.next.me;
     const oppConfirmed = g.next.opp;
     if (meConfirmed && oppConfirmed) {
-      if (g.phase === 'summary' && g.summary?.preloadStatus === 'ready') {
-        finishGeneration('round');
-        bar.appendChild(nextRoundTransition());
-      } else {
-        beginGeneration('round');
-        bar.appendChild(generationLoader('round', { compact: true }));
-      }
+      // 反馈页已经显示同一个后台预加载任务，不再重复创建第二张状态卡。
+      if (g.phase !== 'summary') bar.appendChild(generationLoader('round', { compact: true }));
       return;
     }
     const btnText = options.disabled
@@ -1343,7 +1326,7 @@
     renderMyChoices(myChoices);
     const oppRole = OPP(state.me.role);
     const oppChoices = oppRole === 'A' ? node.choices_A : node.choices_B;
-    renderOppChoices(oppChoices, node.reveal);
+    renderOppChoices(oppChoices);
     renderActionBar();
   }
 
@@ -1383,8 +1366,9 @@
           type: 'text',
           maxlength: '200',
           placeholder: '输入你想做的任意事…',
-          value: state.turn.submitted ? (state.turn.customText || '') : '',
+          value: state.turn.customText || '',
           disabled: state.turn.submitted,
+          oninput: (e) => { state.turn.customText = e.target.value; },
           onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submitCustomChoice(); } },
         }),
         UI.el('button', {
@@ -1409,23 +1393,18 @@
   }
 
   // 对方选择区：手机端简化为一行状态（不再陈列对方选项）
-  function renderOppChoices(choices, reveal) {
+  function renderOppChoices(choices) {
     const box = $('opp-choices');
     UI.clear(box);
     const oppRole = OPP(state.me.role);
     const oppName = ((state.room.storyState && state.room.storyState[oppRole]) || {}).name || ('玩家 ' + oppRole);
-    if (!reveal) {
-      box.appendChild(UI.el('div', { class: 'opp-line sealed' }, [
-        state.turn.oppSubmitted ? UI.icon('lock') : UI.icon('loader', 'icon-spin'),
-        UI.el('span', { text: state.turn.oppSubmitted ? oppName + ' 已选择 · 封缄中' : oppName + ' 思考中…' }),
-      ]));
-      return;
-    }
     box.appendChild(UI.el('div', { class: 'opp-line' }, [
       UI.icon(state.turn.oppSubmitted ? 'check' : 'clock'),
       UI.el('span', {
         text: state.turn.oppSubmitted
-          ? oppName + ' 已选择：' + (state.turn.oppChoiceText || '（行动已提交）')
+          ? state.turn.submitted
+            ? oppName + ' 已选择：' + (state.turn.oppChoiceText || '（行动已提交）')
+            : oppName + ' 已完成选择'
           : oppName + ' 待选择',
       }),
     ]));
@@ -1547,6 +1526,12 @@
       bar.appendChild(generationLoader('summary'));
       return;
     }
+    if (t.advanceFailed && t.submitted && t.oppSubmitted) {
+      bar.appendChild(UI.el('button', {
+        class: 'btn btn-primary btn-block', type: 'button', onclick: requestRoundAdvance,
+      }, [UI.icon('refresh-cw'), UI.el('span', { text: '重新结算' })]));
+      return;
+    }
     if (t.submitted && !t.oppSubmitted) {
       bar.appendChild(waitLine('已提交，等待对方选择…'));
       return;
@@ -1589,6 +1574,22 @@
     }
   }
 
+  async function requestRoundAdvance() {
+    if (state.turn.advancing || state.game.phase !== 'round') return;
+    state.turn.advancing = true;
+    state.turn.advanceFailed = false;
+    beginGeneration('summary');
+    render();
+    const res = await client.advance();
+    if (!res || !res.ok) {
+      state.turn.advancing = false;
+      state.turn.advanceFailed = true;
+      finishGeneration('summary');
+      UI.toast((res && res.error) || '推进失败，请重新结算');
+      render();
+    }
+  }
+
   // ============ 6. 结局 ============
   function renderEnding() {
     const ending = state.room && state.room.ending;
@@ -1607,25 +1608,23 @@
     box.appendChild(endingText);
     box.appendChild(tokenUsageNode(state.room?.tokenUsage, 'token-usage-ending'));
 
-    // 本局回顾（封缄回合事后揭秘）
+    // 本局回顾
     const recap = UI.el('div', { class: 'recap' });
     recap.appendChild(UI.el('div', { class: 'recap-title' }, [UI.icon('history'), UI.el('span', { text: '本局回顾' })]));
     (ending.history || []).forEach((h) => {
-      const sealed = h.reveal === false;
       const recapText = UI.el('div', { class: 'recap-text rich-text' });
       UI.renderRichText(recapText, h.narrative);
       const bodyKids = [
         recapText,
-        UI.el('div', { class: 'recap-reveal' + (sealed ? ' sealed' : '') }, [
-          UI.icon(sealed ? 'lock' : 'eye'),
-          UI.el('span', { text: '第 ' + h.round + ' 回合 · ' + (sealed ? '封缄回合' : '公开回合') }),
+        UI.el('div', { class: 'recap-reveal' }, [
+          UI.icon('history'),
+          UI.el('span', { text: '第 ' + h.round + ' 回合' }),
         ]),
       ];
       if (h.choices) {
-        bodyKids.push(UI.el('div', { class: 'recap-picks' + (sealed ? ' sealed' : '') }, [
+        bodyKids.push(UI.el('div', { class: 'recap-picks' }, [
           UI.el('span', { class: 'recap-pick' }, [UI.el('b', { text: 'A' }), UI.el('span', { text: h.choices.A ? h.choices.A.text : '（未选择）' })]),
           UI.el('span', { class: 'recap-pick' }, [UI.el('b', { text: 'B' }), UI.el('span', { text: h.choices.B ? h.choices.B.text : '（未选择）' })]),
-          sealed ? UI.el('span', { class: 'recap-sealed-tag' }, [UI.icon('lock'), UI.el('span', { text: '封缄揭晓' })]) : null,
         ]));
       }
       recap.appendChild(UI.el('div', { class: 'recap-item' }, [

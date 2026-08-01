@@ -21,6 +21,22 @@ const ACTIVE_DIR = path.join(process.cwd(), 'data', 'room-active');
 export const ROOM_HISTORY_LIMIT_BYTES = 200 * 1024 * 1024;
 const VALID_WORLDBOOK_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const VALID_ROOM_CODE = /^[A-Z2-9]{4,16}$/;
+const MODEL_CONTEXT_WINDOW_TOKENS = 1_000_000;
+
+function emptyTokenUsage() {
+  return {
+    requests: 0,
+    totalTokens: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+    lastContextTokens: 0,
+    lastRequestTokens: 0,
+    lastCacheHitTokens: 0,
+    contextWindowTokens: MODEL_CONTEXT_WINDOW_TOKENS,
+  };
+}
 
 /** 扫描内置世界书 + data/worldbooks 导入的世界书 */
 export function initWorldbookStore() {
@@ -86,12 +102,25 @@ export function importWorldbook({ id, name, content }) {
   if (!data || Array.isArray(data) || !data.entries || typeof data.entries !== 'object' || Array.isArray(data.entries)) {
     throw new Error('世界书格式无效：缺少 entries 对象');
   }
+  if (typeof data.opening_background !== 'string' || !data.opening_background.trim()) {
+    throw new Error('世界书格式无效：opening_background 为必填的固定开场背景');
+  }
   fs.mkdirSync(WB_DIR, { recursive: true });
   const filePath = path.resolve(WB_DIR, `${safeId}.json`);
   if (path.dirname(filePath) !== path.resolve(WB_DIR)) throw new Error('世界书 id 无效');
   fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
   worldbooks.set(safeId, { id: safeId, name: safeName, builtin: false, filePath });
   return { id: safeId, name: safeName };
+}
+
+/** 只有玩家的本回合行动明确要求收束故事时，才允许 AI 生成结局。 */
+export function isEndingRequested(...choices) {
+  return choices.some((choice) => {
+    const text = String(choice || '').replace(/\s+/g, '');
+    if (!text) return false;
+    if (/(?:不|不要|不想|别|暂不).{0,5}(?:结束|结局|完结)/.test(text)) return false;
+    return /(?:结束|完结)(?:这场|这个|本次|本局|当前)?(?:故事|游戏|冒险|旅程|剧情|跑团|本局)|(?:进入|迎来|触发|生成|走向)(?:最终)?结局|(?:故事|剧情|冒险|旅程)(?:到此)?(?:结束|完结)|大结局/.test(text);
+  });
 }
 
 export function loadCharacterCard(filePath) {
@@ -155,7 +184,7 @@ export function createRoom({ worldbookId, code, roomCodeLen = 8 }) {
     nextRoundNode: null,
     nextRoundPromise: null,
     generationProgress: null,
-    tokenUsage: { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, lastContextTokens: 0 },
+    tokenUsage: emptyTokenUsage(),
     nextRoundStatus: 'idle',
     history: [],
     processing: false,
@@ -317,6 +346,7 @@ export function saveActiveRoom(room) {
       chosen: room.chosen,
       openingStatus: room.openingStatus,
       nextRoundStatus: room.nextRoundStatus,
+      tokenUsage: room.tokenUsage,
       history: room.history,
       ending: room.ending,
       offSince: room.offSince,
@@ -373,7 +403,7 @@ export function loadActiveRooms() {
         nextRoundNode: null,
         nextRoundPromise: null,
         processing: false,
-        tokenUsage: data.tokenUsage || { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, lastContextTokens: 0 },
+        tokenUsage: { ...emptyTokenUsage(), ...(data.tokenUsage || {}), contextWindowTokens: MODEL_CONTEXT_WINDOW_TOKENS },
         // 进程重启后所有 Socket 都已断开，应从本次启动重新计算离线超时。
         offSince: {
           A: data.players?.A ? Date.now() : null,
@@ -525,28 +555,29 @@ export function publicRoomView(room) {
   };
 }
 
-/** 两名玩家到齐后后台生成开场；开始按钮复用同一个 Promise，避免重复调用 AI。 */
+/** 固定开场背景直接读取世界书，不调用 AI。 */
 export function preloadOpening(room, config, charCard, onGenerationProgress) {
   if (room.status !== 'waiting') return Promise.resolve(room.openingNode);
   if (room.openingNode) return Promise.resolve(room.openingNode);
   if (room.openingPromise) return room.openingPromise;
-  room.openingStatus = 'loading';
-  room.openingPromise = generateNode(room, config, charCard, {
-    kind: 'intro', progressKind: 'opening', history: room.history, onGenerationProgress,
-  })
-    .then((node) => {
-      if (room.status === 'waiting') {
-        room.openingNode = node;
-        room.openingStatus = 'ready';
-      }
-      return node;
-    })
-    .catch((error) => {
-      room.openingStatus = 'failed';
-      throw error;
-    })
-    .finally(() => { room.openingPromise = null; });
-  return room.openingPromise;
+  const node = {
+    intro: {
+      world: room.worldbook.opening_background || room.worldbook.description || room.worldbook.name || '一个等待书写的世界。',
+      roleA: '',
+      roleB: '',
+    },
+    narrative: '',
+    choices_A: [],
+    choices_B: [],
+    summary: null,
+    reveal: true,
+    story_state: organizeStoryState(room.storyState, room.players),
+    progress: 0,
+    ending: null,
+  };
+  room.openingNode = node;
+  room.openingStatus = 'ready';
+  return Promise.resolve(node);
 }
 
 /** 房主开始：生成开场节点（含 intro 信息），进入 intro 阶段 */
@@ -591,13 +622,15 @@ export async function advanceRoom(room, config, charCard, onGenerationProgress) 
   const historyMaxRounds = Math.max(1, Number(config.game.historyMaxRounds) || 100);
   const nextHistory = (completed ? [...room.history, completed] : [...room.history])
     .slice(-historyMaxRounds);
+  const allowEnding = isEndingRequested(room.chosen.A, room.chosen.B);
   try {
     const node = await generateNode(room, config, charCard, {
       kind: 'summary',
       history: nextHistory,
       choiceA: room.chosen.A,
-      choiceB: room.chosen.B, onGenerationProgress,
+      choiceB: room.chosen.B, allowEnding, onGenerationProgress,
     });
+    if (!allowEnding) node.ending = null;
     room.history = nextHistory;
     room.progress = Math.max(room.progress, node.progress);
     room.storyState = node.story_state;
@@ -613,7 +646,7 @@ export async function advanceRoom(room, config, charCard, onGenerationProgress) 
     room.chosen = { A: null, B: null };
     room.submitted = { A: false, B: false };
     room.nextConfirm = { A: false, B: false };
-    if (room.currentSummary.ending || room.progress >= 1) {
+    if (room.currentSummary.ending) {
       room.status = 'ended';
       room.phase = 'ended';
       room.ending =
@@ -727,7 +760,7 @@ const GENERATION_SECTIONS = {
 };
 
 async function generateNode(room, config, charCard, {
-  kind, progressKind, history, choiceA, choiceB, summary, onGenerationProgress,
+  kind, progressKind, history, choiceA, choiceB, summary, allowEnding = false, onGenerationProgress,
 }) {
   const startedAt = Date.now();
   const sectionKeys = GENERATION_SECTIONS[kind] || GENERATION_SECTIONS.round;
@@ -738,10 +771,7 @@ async function generateNode(room, config, charCard, {
     if (Array.isArray(detail.completedFields)) latestCompletedFields = detail.completedFields;
     if (detail.usage && !recordedUsageAttempts.has(attempt)) {
       recordedUsageAttempts.add(attempt);
-      const usage = room.tokenUsage ||= {
-        requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0,
-        cacheHitTokens: 0, cacheMissTokens: 0, lastContextTokens: 0,
-      };
+      const usage = room.tokenUsage ||= emptyTokenUsage();
       const promptTokens = Number(detail.usage.prompt_tokens) || 0;
       const completionTokens = Number(detail.usage.completion_tokens) || 0;
       usage.requests += 1;
@@ -751,6 +781,9 @@ async function generateNode(room, config, charCard, {
       usage.cacheHitTokens += Number(detail.usage.prompt_cache_hit_tokens) || 0;
       usage.cacheMissTokens += Number(detail.usage.prompt_cache_miss_tokens) || 0;
       usage.lastContextTokens = promptTokens;
+      usage.lastRequestTokens = Number(detail.usage.total_tokens) || promptTokens + completionTokens;
+      usage.lastCacheHitTokens = Number(detail.usage.prompt_cache_hit_tokens) || 0;
+      usage.contextWindowTokens = MODEL_CONTEXT_WINDOW_TOKENS;
     }
     const payload = {
       kind: progressKind || kind,
@@ -777,21 +810,26 @@ async function generateNode(room, config, charCard, {
     ? room.worldbook.token_budget
     : config.game.worldbookTokenBudget;
   const activated = activateEntries(room.worldbook, scanText, { budget });
-  const loreText = buildLoreText(room.worldbook, activated);
+  const constantLoreText = buildLoreText(room.worldbook, activated.filter((entry) => entry.constant));
+  const dynamicLoreText = buildLoreText(room.worldbook, activated.filter((entry) => !entry.constant));
 
   let instruction;
   if (kind === 'intro') {
     instruction =
       '【指令】这是故事的开场，请一次性完成：1) intro.world 填写自然分段的世界观背景，intro.roleA/roleB 填写角色介绍；2) narrative 写出 2-4 个自然段的开场叙事，并用 **文字** 少量强调关键名词或变化；3) 给出双方第一轮选择；4) 初始化双方状态。';
   } else if (kind === 'summary') {
-    instruction = `【本回合双方选择】\n玩家A：${choiceA}\n玩家B：${choiceB}\n【指令】总结本回合两位玩家行动的后果：summary 字段用 2-3 个自然段分别写清行动后果与状态变化，并用 **文字** 少量强调关键结果；更新 story_state（字段可自由增减）与 progress。若故事已到结局，ending.text 也必须自然分段。`;
+    const endingRule = allowEnding
+      ? '玩家已明确要求结束故事，请在本次返回完整 ending，并让 ending.text 自然分段。'
+      : '玩家没有明确要求结束故事，ending 必须为 null；即使 progress 达到 1 也必须继续游戏。';
+    instruction = `【本回合双方选择】\n玩家A：${choiceA}\n玩家B：${choiceB}\n【指令】总结本回合两位玩家行动的后果：summary 字段用 2-3 个自然段分别写清行动后果与状态变化，并用 **文字** 少量强调关键结果；更新 story_state（字段可自由增减）与 progress。${endingRule}`;
   } else {
     instruction = `【上一回合结果】${summary || '（无）'}\n【指令】基于当前局势继续剧情：narrative 给出 2-4 个自然段，按场景与动作节奏换段，并用 **文字** 少量强调关键名词或变化；给出双方下一轮选择（choices_A / choices_B），更新 story_state 与 progress。`;
   }
 
-  const system = buildSystemPrompt(charCard);
+  // 固定世界设定放在稳定的 system 前缀中，后续回合可复用提示词缓存。
+  const system = [buildSystemPrompt(charCard), constantLoreText].filter(Boolean).join('\n\n');
   const user = [
-    loreText,
+    dynamicLoreText,
     `【玩家角色资料】\n玩家A：${JSON.stringify({ name: playerDisplayName(room.players.A) || '玩家A', ...(room.players.A?.profile || {}) })}\n玩家B：${JSON.stringify({ name: playerDisplayName(room.players.B) || '玩家B', ...(room.players.B?.profile || {}) })}\n叙事、选项和状态栏必须使用剧情昵称，并结合性别、性格与补充设定塑造角色。`,
     '【剧情历史】\n' + buildHistoryText(history, config.game.historyRounds),
     '【当前结构化状态】\n' + JSON.stringify(room.storyState || {}),
@@ -801,13 +839,13 @@ async function generateNode(room, config, charCard, {
     .filter(Boolean)
     .join('\n\n');
 
-  // 调用 + 容错：解析失败或疑似截断时以更大 token 上限重试一次
+  // 调用 + 容错：网络失败、超时或结构无效时，总共尝试三次。
   let raw = null;
   let parsed = null;
   const generationBudgetMs = Math.max(5000, Number(config.ai.timeoutMs) || 60000);
   const generationDeadline = Date.now() + generationBudgetMs;
   const initialMaxTokens = Math.min(4096, Math.max(1024, Number(config.ai.maxTokens) || 2048));
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) {
       report({ phase: 'retrying', attempt: attempt + 1, contentChars: 0, reasoningChars: 0, completedFields: [] });
     }
@@ -828,19 +866,26 @@ async function generateNode(room, config, charCard, {
       );
     } catch (e) {
       console.warn('[LLM] 调用失败：', e.message);
-      report({ phase: 'failed', attempt: attempt + 1, message: e.message });
       raw = null;
+      if (attempt < 2) continue;
+      report({ phase: 'failed', attempt: attempt + 1, message: e.message });
       break;
     }
     report({ phase: 'validating', attempt: attempt + 1, contentChars: raw?.length || 0, completedFields: latestCompletedFields });
     parsed = raw ? parseGameReply(raw) : null;
     if (parsed) break;
-    if (attempt === 0 && raw) {
-      console.warn('[LLM] 解析失败（可能输出被截断），以更大上限重试一次，RAW前200字：', raw.slice(0, 200));
+    if (attempt < 2 && raw) {
+      console.warn('[LLM] 解析失败（可能输出被截断），以更大上限重试，RAW前200字：', raw.slice(0, 200));
     }
   }
-  if (raw && !parsed) console.warn('[LLM] 重试后仍解析失败，降级为演示叙事');
+  if (raw && !parsed) console.warn('[LLM] 重试后仍解析失败');
   if (!raw) console.warn('[LLM] 无返回（可能超时或接口异常），kind=' + kind);
+  const demoMode = !config.ai.apiKey;
+  if (!parsed && !demoMode) {
+    report({ phase: 'failed', contentChars: raw?.length || 0, completedFields: [], message: 'AI 未能生成有效内容' });
+    room.generationProgress = null;
+    throw new Error(raw ? 'AI 返回格式无效，请重试' : 'AI 请求失败，请重试');
+  }
   if (!parsed) report({ phase: 'fallback', contentChars: raw?.length || 0, completedFields: [] });
   const node = normalizeNode(parsed, {
     intro: kind === 'intro' ? {
@@ -855,8 +900,9 @@ async function generateNode(room, config, charCard, {
     summary: kind === 'summary' ? '（演示模式）本回合尘埃落定，两位玩家的选择各自产生了结果。\n\n新的线索浮现，**局势**也随之发生变化。' : null,
   });
   node.story_state = organizeStoryState(node.story_state, room.players);
-  if (!parsed) node.progress = Math.min(1, room.progress + 0.25);
+  if (!parsed) node.progress = room.progress;
   else node.progress = Math.max(room.progress, node.progress);
   if (parsed) report({ phase: 'completed', contentChars: raw.length, completedFields: latestCompletedFields });
+  room.generationProgress = null;
   return node;
 }

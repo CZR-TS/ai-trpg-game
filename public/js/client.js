@@ -68,9 +68,9 @@ class GameClient {
 // MockClient：内存态模拟完整链路，模拟网络/AI 延迟
 // 无预设剧情链、无结局判定规则：
 //  - 每次"AI 推进"从场景池随机取材，即兴拼单段叙事 + 双方 2-3 个选项（每回合不同）
-//  - reveal 随机 true/false，纯数据驱动
+//  - 对方选择内容仅在自己提交后可见
 //  - story_state 随机小幅漂移模拟 AI 维护，不绑定选项
-//  - 进度到顶 → "AI 判定中…"（game:judging，mock 附加事件）→ 即兴取一段结局文本
+//  - 故事进度只作展示，不用于自动结束游戏
 // ============================================================
 class MockClient extends GameClient {
   constructor() {
@@ -111,6 +111,9 @@ class MockClient extends GameClient {
   async importWorldbook({ name, content }) {
     await delay(300);
     const g = this._guardAdmin(); if (g) return g;
+    if (typeof content?.opening_background !== 'string' || !content.opening_background.trim()) {
+      return { ok: false, error: 'opening_background 为必填的固定开场背景' };
+    }
     const entries = content && content.entries ? Object.entries(content.entries) : [];
     const wb = {
       id: 'imported-' + Date.now(),
@@ -295,12 +298,14 @@ class MockClient extends GameClient {
     if (!room || !this.me || !room.currentNode) return { ok: false };
     room.choices[this.me.role] = choiceId;
     room.submitted[this.me.role] = true;
-    // 通知对方「我已选择」：reveal=true 时附选择文本，reveal=false 时不附（封缄）
-    // 自定义行动时也把文本带过去（公开回合）
+    // 通知双方提交状态；双方各自提交后才得到对方的具体选择。
+    // 自定义行动与预设选项使用同一套提交可见性规则。
     const node = room.currentNode;
     this.bus.emit('game:choice_update', {
       role: this.me.role, chosen: true,
-      ...(node.reveal ? { choiceText: String(choiceId) } : {}),
+      ...(room.submitted.A && room.submitted.B
+        ? { opponentChoiceText: String(room.choices[this.me.role === 'A' ? 'B' : 'A']) }
+        : {}),
     });
     // mock：若是 A，则延时让 B（bot）自动选择
     if (this.me.role === 'A') this._scheduleBotChoice(room);
@@ -315,7 +320,7 @@ class MockClient extends GameClient {
     if (!(room.submitted.A && room.submitted.B)) return { ok: false, error: '等待双方提交' };
     room._advancing = true;
 
-    // 归档本回合（含双方选择，结局回顾 / 封缄事后揭秘用）
+    // 归档本回合（含双方选择，供结局回顾使用）
     room.history.push({
       round: room.round, node: room.currentNode,
       choices: this._resolveChoices(room, room.currentNode),
@@ -337,20 +342,6 @@ class MockClient extends GameClient {
     room.submitted = { A: false, B: false };
     room.nextConfirm = { A: false, B: false };
     room._advancing = false;
-
-    if (room.progress >= 1) {
-      // 结局：AI 判定中 → 即兴取一段结局文本
-      room.status = 'judging';
-      this.bus.emit('game:judging', {});
-      this.bus.emit('room:state', { room: this._publicRoom(room) });
-      await delay(2000);
-      const ending = this._buildEnding(room);
-      room.ending = ending;
-      room.status = 'ended';
-      this.bus.emit('room:state', { room: this._publicRoom(room) });
-      this.bus.emit('game:ended', { ending, summary, progress: 1 });
-      return { ok: true };
-    }
 
     room.phase = 'summary';
     this.bus.emit('room:state', { room: this._publicRoom(room) });
@@ -433,10 +424,9 @@ class MockClient extends GameClient {
   // ============ mock 内部辅助 ============
   _myRoom() { return this.currentRoomId ? this.rooms[this.currentRoomId] : null; }
 
-  // 对外房间快照（封缄回合不暴露对方具体选择 id）
+  // 对外房间快照
   _publicRoom(room) {
     const r = JSON.parse(JSON.stringify(room));
-    if (r.currentNode && r.currentNode.reveal === false) r.choices = { A: null, B: null };
     return r;
   }
 
@@ -502,7 +492,7 @@ class MockClient extends GameClient {
       const node = room.currentNode;
       this.bus.emit('game:choice_update', {
         role: 'B', chosen: true,
-        ...(node.reveal && c ? { choiceText: c.text } : {}),
+        ...(room.submitted.A && c ? { choiceText: c.text, opponentChoiceText: c.text } : {}),
       });
     }, 1200);
   }
@@ -518,14 +508,10 @@ class MockClient extends GameClient {
     const mk = (list, role) => pickN(list, rand(2, 3)).map((text, i) => ({ id: scene.id + '-' + role + '-' + i, text }));
     const choices_A = mk(scene.optionsA, 'a');
     const choices_B = mk(scene.optionsB, 'b');
-    // reveal：由"AI"数据驱动随机生成 true/false
-    let reveal = Math.random() < 0.5;
-    const lastTwo = room.history.slice(-2).map(h => h.node && h.node.reveal);
-    if (lastTwo.length >= 2 && lastTwo[0] === lastTwo[1] && lastTwo[1] === reveal) reveal = !reveal;
     return {
       round: room.round, _sceneId: scene.id,
       intro: kind === 'intro' ? this._buildIntro(room) : null,
-      narrative, choices_A, choices_B, reveal,
+      narrative, choices_A, choices_B, reveal: true,
       story_state: JSON.parse(JSON.stringify(room.storyState)),
       progress: room.progress,
     };
@@ -617,7 +603,7 @@ class SocketClient extends GameClient {
     const events = [
       'room:state', 'player:joined', 'player:reconnected', 'player:disconnected',
       'player:ready', 'game:started', 'game:starting', 'game:intro', 'game:profile_update', 'game:round', 'game:choice_update',
-      'game:summary', 'game:next_update', 'game:preload_status', 'game:generation_progress', 'game:judging', 'game:ended',
+      'game:summary', 'game:next_update', 'game:preload_status', 'game:generation_progress', 'game:advance_failed', 'game:judging', 'game:ended',
     ];
     events.forEach((event) => this.socket.on(event, (payload) => this.bus.emit(event, payload)));
     this.socket.on('disconnect', () => {

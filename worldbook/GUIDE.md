@@ -50,6 +50,7 @@
 {
   "name": "世界书名称",
   "description": "简介（不会进入 AI 上下文，仅作备忘）",
+  "opening_background": "同一世界所有游戏共用的固定初始背景",
   "scan_depth": 6,
   "recursive_scanning": true,
   "recursive_depth": 2,
@@ -66,12 +67,21 @@
 |---|---|---|---|
 | `name` | string | 文件名 | 世界书名称 |
 | `description` | string | "" | 简介，不进 prompt |
+| `opening_background` | string | 无 | **必填且不能为空**；开场直接展示的固定世界背景，不调用 AI 重复生成 |
 | `scan_depth` | int \| null | 全局默认 | 扫描最近 N 回合找关键词；`0` 表示只扫递归内容 |
 | `recursive_scanning` | bool | true | 是否允许条目互相递归激活 |
 | `recursive_depth` | int | 2 | 递归扫描层数（越大引用链越深） |
 | `token_budget` | int \| null | 全局默认 | 注入 token 上限；设为很大（如 100000）等于不限 |
 | `extensions` | object | {} | 扩展字段，预留 |
 | `entries` | object | — | **条目字典，键为 uid 的字符串**（必须，否则加载报错） |
+
+### 固定开场背景的更新方式
+
+1. 在 JSON 顶层维护 `opening_background`，不要把玩家姓名或某一局的角色经历写进去。
+2. 同一世界的所有新房间都会直接展示这段背景，不会为每个房间重新请求 AI。
+3. 玩家完成角色资料后，第一回合才由 AI 结合角色与世界书生成，因此角色部分可以随每局变化。
+4. 修改背景后，重新导入世界书或随项目部署更新后的 JSON；已经进行中的房间继续使用开局时保存的背景。
+5. `opening_background` 是强制字段；缺少或为空时，世界书会被拒绝导入和加载。
 
 ---
 
