@@ -129,5 +129,22 @@ assert.equal(activated.filter((entry) => entry.group === 'g').length, 1, '递归
 const loaded = loadWorldbookFile(path.resolve('worldbook/examples/fantasy-example/worldbook.json'));
 assert.equal(loaded.scan_depth, 4);
 assert.equal(loaded.token_budget, 2000);
+
+const pageHtml = await readFile(path.resolve('public/index.html'), 'utf8');
+const pageCss = await readFile(path.resolve('public/css/style.css'), 'utf8');
+const pageApp = await readFile(path.resolve('public/js/app.js'), 'utf8');
+assert.match(pageHtml, /id="theme-toggle"[^>]+data-action="theme-toggle"/, '顶部必须提供主题切换按钮');
+assert.match(pageHtml, /<button class="brand"[\s\S]*?<span>共叙<\/span>/, '顶部品牌必须包含“共叙”文字');
+assert.doesNotMatch(pageCss, /\.brand\s+span\s*\{[^}]*display\s*:\s*none/, '移动端不能再隐藏品牌文字');
+assert.match(pageCss, /:root\[data-theme='dark'\]/, '样式表必须包含暗色主题变量');
+assert.match(pageCss, /\.topbar-actions\s*\{/, '顶部操作区必须为品牌和主题按钮预留布局');
+assert.match(pageApp, /localStorage\.setItem\(THEME_KEY, next\)/, '主题选择必须写入本地存储');
+assert.match(pageApp, /dark \? 'sun' : 'moon'/, '主题按钮必须使用 Lucide 的太阳/月亮图标');
+assert.match(pageHtml, /style\.css\?v=20260801-11/, '主题样式更新后必须刷新静态资源版本');
+assert.doesNotMatch(pageApp, /action === 'goto-(?:admin|player)'[\s\S]{0,120}leaveCurrentRoom/, '顶部工作区切换不能离开玩家房间');
+assert.match(pageApp, /WORKSPACE_KEY = 'trpg_workspace_v1'/, '当前工作区必须本地记忆');
+assert.match(pageApp, /管理员登录态与玩家房间态分别恢复/, '刷新时必须分别恢复两个工作区');
+assert.match(pageApp, /if \(isAdminView\(state\.view\)\) return/, '后台收到玩家事件时不能被强制切回游戏页');
+
 console.log('后端单元测试通过');
 for (const testRoom of [room, preloadRoom, introRoom, brokenRoom]) game.removeActiveRoom(testRoom.id);

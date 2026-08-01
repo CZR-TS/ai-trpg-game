@@ -8,6 +8,8 @@
 
   const state = {
     view: 'admin-login',   // admin-login | admin-panel | player-entry | lobby | game | ending
+    playerView: 'player-entry',
+    adminView: 'admin-login',
     admin: { loggedIn: false, worldbooks: [], current: null, rooms: [], history: [], storage: { usedBytes: 0, limitBytes: 200 * 1024 * 1024, fileCount: 0 }, lastRoom: null, online: { count: 0, rooms: [] } },
     room: null,            // 房间全量镜像（room:state 推送）
     me: null,              // { role, name }
@@ -16,16 +18,63 @@
     oppOffline: false, // 对方是否离线（游戏中）
   };
 
+  // ============ 明暗主题 ============
+  const THEME_KEY = 'trpg_theme_v1';
+  function applyTheme(theme, persist = true) {
+    const next = theme === 'dark' ? 'dark' : 'light';
+    document.documentElement.dataset.theme = next;
+    const button = $('theme-toggle');
+    if (button) {
+      const dark = next === 'dark';
+      const label = dark ? '切换到明色模式' : '切换到暗色模式';
+      button.setAttribute('aria-label', label);
+      button.setAttribute('title', label);
+      button.setAttribute('aria-pressed', String(dark));
+      UI.clear(button);
+      button.appendChild(UI.icon(dark ? 'sun' : 'moon'));
+      UI.refreshIcons();
+    }
+    if (persist) {
+      try { localStorage.setItem(THEME_KEY, next); } catch {}
+    }
+  }
+
+  function toggleTheme() {
+    const current = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+    applyTheme(current === 'dark' ? 'light' : 'dark');
+  }
+
   // ============ 视图切换 ============
+  const ADMIN_VIEWS = new Set(['admin-login', 'admin-panel']);
+  const PLAYER_VIEWS = new Set(['player-entry', 'lobby', 'game', 'ending']);
+  const WORKSPACE_KEY = 'trpg_workspace_v1';
+  const isAdminView = (name) => ADMIN_VIEWS.has(name);
+
+  function saveActiveWorkspace(workspace) {
+    try { localStorage.setItem(WORKSPACE_KEY, workspace); } catch {}
+  }
+
+  function loadActiveWorkspace() {
+    try { return localStorage.getItem(WORKSPACE_KEY); } catch { return null; }
+  }
+
   function switchView(name) {
     state.view = name;
+    if (ADMIN_VIEWS.has(name)) state.adminView = name;
+    if (PLAYER_VIEWS.has(name)) state.playerView = name;
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('view-active', v.dataset.view === name));
-    const isAdmin = name === 'admin-login' || name === 'admin-panel';
+    const isAdmin = isAdminView(name);
     document.querySelectorAll('.role-switch .link').forEach(b => b.classList.toggle('is-active', (b.dataset.role === 'admin') === isAdmin));
     render();
     window.scrollTo(0, 0);
   }
 
+
+  function showPlayerView(name) {
+    state.playerView = name;
+    if (isAdminView(state.view)) return;
+    if (state.view !== name) switchView(name); else render();
+  }
   function render() {
     switch (state.view) {
       case 'admin-panel': renderAdminPanel(); break;
@@ -128,7 +177,7 @@
     syncOpponentOffline();
     state.game = { phase: 'intro', intro, summary: null, next: { me: false, opp: false }, starting: false };
     restoreNextConfirm(confirmed);
-    if (state.view !== 'game') switchView('game'); else render();
+    showPlayerView('game');
   });
   client.on('game:round', (payload) => {
     resetTurn();
@@ -158,7 +207,7 @@
       }
       state.turn.oppSubmitted = !!payload.submitted[OPP(meRole)];
     }
-    if (state.view !== 'game') switchView('game'); else render();
+    showPlayerView('game');
   });
   client.on('game:summary', (payload) => {
     syncOpponentOffline();
@@ -166,7 +215,7 @@
     state.game.summary = payload;
     state.game.next = { me: false, opp: false };
     restoreNextConfirm(payload.confirmed);
-    if (state.view !== 'game') switchView('game'); else render();
+    showPlayerView('game');
   });
   client.on('game:preload_status', ({ status }) => {
     if (state.game.summary) state.game.summary.preloadStatus = status;
@@ -204,7 +253,7 @@
   client.on('game:ended', ({ ending }) => {
     if (state.room) state.room.ending = ending;
     state.oppOffline = false;
-    switchView('ending');
+    showPlayerView('ending');
   });
 
   // 对方离线/重连提示（游戏中一方掉线时显示横幅 + 结束本局）
@@ -538,6 +587,7 @@
     if (res.ok) {
       state.me = { role: res.role, name: '组织者预览' };
       resetTurn();
+      saveActiveWorkspace('player');
       switchView('lobby');
     } else {
       UI.toast(res.error || '进入失败');
@@ -549,18 +599,20 @@
     const el = e.target.closest('[data-action]');
     if (!el) return;
     const action = el.dataset.action;
+    if (action === 'theme-toggle') toggleTheme();
     if (action === 'go-home') {
       await leaveCurrentRoom();
       switchView('admin-login');
     }
     if (action === 'goto-admin') {
-      await leaveCurrentRoom();
+      saveActiveWorkspace('admin');
       if (state.admin.loggedIn) enterAdminPanel();
       else switchView('admin-login');
     }
     if (action === 'goto-player') {
-      await leaveCurrentRoom();
-      switchView('player-entry');
+      saveActiveWorkspace('player');
+      stopOnlinePolling();
+      switchView(state.playerView || (state.me ? 'lobby' : 'player-entry'));
     }
     if (action === 'copy-code') {
       const code = state.room ? state.room.code : (state.admin.lastRoom ? state.admin.lastRoom.code : null);
@@ -569,9 +621,11 @@
     if (action === 'admin-logout') {
       await client.logout();
       state.admin.loggedIn = false;
+      state.adminView = 'admin-login';
       stopOnlinePolling();
       UI.toast('已退出登录');
-      switchView('player-entry');
+      saveActiveWorkspace('player');
+      switchView(state.playerView || (state.me ? 'lobby' : 'player-entry'));
     }
     if (action === 'create-room') createRoom();
     if (action === 'room-refresh') { await refreshRooms(); render(); }
@@ -1208,29 +1262,38 @@
 
   // ============ 初始化 ============
   (async function init() {
-    // 默认显示玩家入口；若检测到已登录（Cookie 7 天），自动进入后台
-    const me = await client.me();
-    if (me && me.ok) {
-      state.admin.loggedIn = true;
-      enterAdminPanel();
-    } else {
-      // 检测到上次未结束的对局（localStorage），自动重连恢复进度
-      const sess = loadSession();
-      if (sess && sess.roomCode && sess.name) {
-        $('inp-code').value = sess.roomCode;
-        $('inp-name').value = sess.name;
-        const res = await client.join({ roomCode: sess.roomCode, name: sess.name });
-        if (res && res.ok) {
-          state.me = { role: res.role, name: sess.name };
-          resetTurn();
-          switchView('lobby');
-          UI.refreshIcons();
-          return;
-        }
-        // 房间已结束/不存在：清 session，留在玩家入口
+    applyTheme(document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light', false);
+
+    // 管理员登录态与玩家房间态分别恢复，互不覆盖。
+    const adminSession = await client.me();
+    state.admin.loggedIn = !!(adminSession && adminSession.ok);
+    state.adminView = state.admin.loggedIn ? 'admin-panel' : 'admin-login';
+
+    const sess = loadSession();
+    if (sess && sess.roomCode && sess.name) {
+      $('inp-code').value = sess.roomCode;
+      $('inp-name').value = sess.name;
+      const res = await client.join({ roomCode: sess.roomCode, name: sess.name });
+      if (res && res.ok) {
+        state.me = { role: res.role, name: sess.name };
+        resetTurn();
+        if (state.playerView === 'player-entry') state.playerView = 'lobby';
+      } else {
         clearSession();
+        state.playerView = 'player-entry';
       }
-      switchView('player-entry');
+    }
+
+    const preferredWorkspace = loadActiveWorkspace();
+    if (preferredWorkspace === 'admin') {
+      if (state.admin.loggedIn) await enterAdminPanel();
+      else switchView('admin-login');
+    } else if (preferredWorkspace === 'player') {
+      switchView(state.playerView);
+    } else if (state.admin.loggedIn) {
+      await enterAdminPanel();
+    } else {
+      switchView(state.playerView);
     }
     UI.refreshIcons();
   })();

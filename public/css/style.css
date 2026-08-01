@@ -1,6 +1,5 @@
 /* ============================================================
-   AI 双人跑团 · 纯黑白灰极简主题
-   配色锁定：#000 文字 / #fff 背景 / #888 次级 / #e5e5e5 边框 / #f5f5f5 hover
+   AI 双人跑团 · 黑白灰极简明暗主题
    图标全部 lucide（1.5px stroke），无任何自绘字符图标 / 彩色
    ============================================================ */
 
@@ -11,6 +10,18 @@
   --border: #e5e5e5;
   --hover: #f5f5f5;
   --surface: #fafafa;
+  --primary-hover: #222222;
+  --success: #0a7a3d;
+  --success-border: rgba(10, 122, 61, 0.35);
+  --success-surface: rgba(10, 122, 61, 0.06);
+  --warning: #b45309;
+  --warning-border: rgba(180, 83, 9, 0.4);
+  --warning-surface: rgba(180, 83, 9, 0.08);
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --on-accent: #ffffff;
+  --role-accent: #4f46e5;
+  --shadow: rgba(0, 0, 0, 0.12);
   --radius: 6px;
   --radius-lg: 10px;
   --font: 'Noto Serif SC', 'Source Han Serif SC', 'Songti SC', 'SimSun', '宋体', serif;
@@ -24,6 +35,29 @@
   --sp-10: 40px;
   --sp-12: 48px;
   --ease: cubic-bezier(0.2, 0.6, 0.2, 1);
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  --fg: #f5f5f5;
+  --bg: #111111;
+  --muted: #a3a3a3;
+  --border: #353535;
+  --hover: #222222;
+  --surface: #181818;
+  --primary-hover: #d4d4d4;
+  --success: #4ade80;
+  --success-border: rgba(74, 222, 128, 0.38);
+  --success-surface: rgba(74, 222, 128, 0.1);
+  --warning: #fbbf24;
+  --warning-border: rgba(251, 191, 36, 0.42);
+  --warning-surface: rgba(251, 191, 36, 0.1);
+  --danger: #ef4444;
+  --danger-hover: #dc2626;
+  --on-accent: #ffffff;
+  --role-accent: #6366f1;
+  --shadow: rgba(0, 0, 0, 0.42);
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
@@ -50,7 +84,7 @@ body {
 h1, h2, h3, p { margin: 0; }
 button { font-family: inherit; cursor: pointer; }
 input { font-family: inherit; }
-::selection { background: #000; color: #fff; }
+::selection { background: var(--fg); color: var(--bg); }
 
 /* ---------- 顶部导航 ---------- */
 .topbar {
@@ -82,6 +116,9 @@ input { font-family: inherit; }
   letter-spacing: -0.01em;
 }
 .brand svg { width: 18px; height: 18px; }
+.topbar-actions { display: inline-flex; align-items: center; gap: var(--sp-2); }
+.theme-toggle { flex: 0 0 auto; }
+.theme-toggle svg { width: 16px; height: 16px; }
 .role-switch { display: inline-flex; align-items: center; gap: var(--sp-2); }
 .role-switch .link {
   background: none;
@@ -173,7 +210,7 @@ input { font-family: inherit; }
 .code-input { text-transform: uppercase; letter-spacing: 0.12em; }
 .field-error {
   margin: 0;
-  color: #000;
+  color: var(--fg);
   font-size: 13px;
   padding: var(--sp-2) var(--sp-3);
   background: var(--hover);
@@ -204,7 +241,7 @@ input { font-family: inherit; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-block { width: 100%; }
 .btn-primary { background: var(--fg); color: var(--bg); border-color: var(--fg); }
-.btn-primary:hover { background: #222; color: var(--bg); }
+.btn-primary:hover { background: var(--primary-hover); color: var(--bg); }
 .btn-ghost { background: var(--bg); border-color: var(--border); }
 .btn-ghost:hover { background: var(--hover); }
 .btn-sm { padding: 6px var(--sp-3); font-size: 12px; }
@@ -295,7 +332,7 @@ input { font-family: inherit; }
   background: var(--surface);
   border: 1px solid var(--border);
 }
-.online-count.has-online { color: #0a7a3d; border-color: rgba(10, 122, 61, 0.35); background: rgba(10, 122, 61, 0.06); }
+.online-count.has-online { color: var(--success); border-color: var(--success-border); background: var(--success-surface); }
 .online-list { display: grid; grid-template-columns: 1fr; gap: var(--sp-3); }
 @media (min-width: 860px) { .online-list { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); } }
 .online-card {
@@ -321,7 +358,7 @@ input { font-family: inherit; }
   border-radius: var(--radius);
   background: var(--bg);
 }
-.online-player svg { width: 14px; height: 14px; color: #0a7a3d; margin-left: auto; }
+.online-player svg { width: 14px; height: 14px; color: var(--success); margin-left: auto; }
 .online-role {
   width: 20px;
   height: 20px;
@@ -331,8 +368,8 @@ input { font-family: inherit; }
   border-radius: 50%;
   font-size: 11px;
   font-weight: 700;
-  color: #fff;
-  background: var(--primary, #4f46e5);
+  color: var(--on-accent);
+  background: var(--primary, var(--role-accent));
 }
 .online-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -345,23 +382,23 @@ input { font-family: inherit; }
   flex-wrap: wrap;
   padding: var(--sp-3) var(--sp-4);
   margin: 0 0 var(--sp-4);
-  border: 1px solid rgba(180, 83, 9, 0.4);
+  border: 1px solid var(--warning-border);
   border-radius: var(--radius);
-  background: rgba(180, 83, 9, 0.08);
+  background: var(--warning-surface);
 }
 .offline-banner-text {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
   font-size: 13px;
-  color: #b45309;
+  color: var(--warning);
 }
 .offline-banner-text svg { width: 15px; height: 15px; }
 .btn-danger {
-  background: #dc2626;
-  color: #fff;
+  background: var(--danger);
+  color: var(--on-accent);
 }
-.btn-danger:hover { background: #b91c1c; }
+.btn-danger:hover { background: var(--danger-hover); }
 
 /* 世界书项 */
 .wb-item {
@@ -983,7 +1020,7 @@ button.choice-item:hover:not(:disabled) { border-color: var(--fg); background: v
   opacity: 0;
   transform: translateY(8px);
   transition: opacity 0.2s var(--ease), transform 0.2s var(--ease);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 4px 16px var(--shadow);
   max-width: 90vw;
 }
 .toast.show { opacity: 1; transform: translateY(0); }
@@ -991,9 +1028,12 @@ button.choice-item:hover:not(:disabled) { border-color: var(--fg); background: v
 /* ---------- 手机端微调 ---------- */
 @media (max-width: 600px) {
   body { font-size: 14px; }
+  .topbar-inner { gap: var(--sp-2); }
+  .topbar-actions { gap: var(--sp-1); }
+  .role-switch { gap: var(--sp-1); }
+  .role-switch .link { padding-left: 6px; padding-right: 6px; }
   .sheet { padding: var(--sp-5) var(--sp-4); }
   .sheet-head h1 { font-size: 21px; }
-  .brand span { display: none; }
   .narrative-text { font-size: 14.5px; }
   .game-top { gap: var(--sp-2); }
   .seats { gap: var(--sp-2); }

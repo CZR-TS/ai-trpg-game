@@ -5,10 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>共叙 · 双人故事</title>
   <meta name="description" content="AI 当 DM，看着世界书实时编剧情，两位玩家做选择推进剧情。">
+  <script>
+    try {
+      const savedTheme = localStorage.getItem('trpg_theme_v1');
+      if (savedTheme === 'light' || savedTheme === 'dark') document.documentElement.dataset.theme = savedTheme;
+    } catch {}
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css?v=20260801-9">
+  <link rel="stylesheet" href="css/style.css?v=20260801-11">
 </head>
 <body>
   <!-- 顶部导航 -->
@@ -17,11 +23,16 @@
       <button class="brand" data-action="go-home" type="button">
         <i data-lucide="dices"></i><span>共叙</span>
       </button>
-      <nav class="role-switch">
-        <button class="link" data-action="goto-player" data-role="player" type="button">玩家</button>
-        <span class="sep" aria-hidden="true"></span>
-        <button class="link" data-action="goto-admin" data-role="admin" type="button">管理员</button>
-      </nav>
+      <div class="topbar-actions">
+        <nav class="role-switch" aria-label="身份入口">
+          <button class="link" data-action="goto-player" data-role="player" type="button">玩家</button>
+          <span class="sep" aria-hidden="true"></span>
+          <button class="link" data-action="goto-admin" data-role="admin" type="button">管理员</button>
+        </nav>
+        <button id="theme-toggle" class="icon-btn theme-toggle" data-action="theme-toggle" type="button" aria-label="切换到暗色模式" title="切换到暗色模式">
+          <i data-lucide="moon"></i>
+        </button>
+      </div>
     </div>
   </header>
 
@@ -206,8 +217,8 @@
   <script src="vendor/socket.io.min.js"></script>
   <!-- 应用脚本（非 ES module，file:// 可直接打开） -->
   <script src="js/worldbook-data.js"></script>
-  <script src="js/client.js?v=20260801-9"></script>
-  <script src="js/ui.js?v=20260801-9"></script>
-  <script src="js/app.js?v=20260801-9"></script>
+  <script src="js/client.js?v=20260801-11"></script>
+  <script src="js/ui.js?v=20260801-11"></script>
+  <script src="js/app.js?v=20260801-11"></script>
 </body>
 </html>
