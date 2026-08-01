@@ -210,6 +210,10 @@ assert.equal(
 );
 assert.match(buildSystemPrompt(character), /仅用 \*\*重点文字\*\*/, 'AI 提示词必须要求少量 Markdown 粗体');
 assert.match(buildSystemPrompt(character), /转义换行符 \\n\\n 分段/, 'AI 提示词必须要求自然分段');
+assert.match(buildSystemPrompt(character), /玩家正文与内部状态边界/, '提示词必须明确隔离玩家正文与系统内部状态');
+assert.match(buildSystemPrompt(character), /禁止在正文中使用系统总结口吻宣布/, '玩家正文不得直接展示关系、目标或进度等系统结论');
+assert.match(buildSystemPrompt(character), /narrative 通常写 3-5 个自然段、约 450-800 个中文字符/, '每回合叙事必须提供更充分的信息量');
+assert.match(buildSystemPrompt(character), /summary 通常写 3-4 个自然段、约 300-550 个中文字符/, '回合反馈必须提供更充分的结果信息');
 const concisePrompt = buildSystemPrompt(character);
 assert.match(concisePrompt, /全局文风·中度简洁/, 'AI 提示词必须固定使用中度简洁文风');
 assert.match(concisePrompt, /动作与事实优先/, '中度简洁文风必须要求优先描写动作与结果');
@@ -290,9 +294,18 @@ const loaded = loadWorldbookFile(path.resolve('worldbook/examples/fantasy-exampl
 assert.equal(loaded.scan_depth, 4);
 assert.equal(loaded.token_budget, 2000);
 assert.match(loaded.opening_background, /艾尔登大陆/, '世界书必须加载固定开场背景');
+const xuanhuanWorldbook = loadWorldbookFile(path.resolve('worldbook/examples/xuanhuan-example/worldbook.json'));
+assert.ok(xuanhuanWorldbook.opening_background.length > 600, '玄幻世界书固定开场必须提供足够完整的世界信息');
+assert.match(xuanhuanWorldbook.opening_background, /五域[\s\S]*修行者[\s\S]*魔渊[\s\S]*先天至宝/, '玄幻开场必须覆盖地理、修炼体系与核心危机');
 const worldbookSchema = JSON.parse(await readFile(path.resolve('worldbook/schema.json'), 'utf8'));
 assert.ok(worldbookSchema.required.includes('opening_background'), '世界书 Schema 必须强制固定开场背景字段');
 assert.equal(worldbookSchema.properties.opening_background.minLength, 1, '固定开场背景不得为空字符串');
+assert.match(worldbookSchema.properties.opening_background.description, /地理\/社会[\s\S]*力量体系[\s\S]*当前危机/, 'Schema 必须说明固定开场的最低信息范围');
+const worldbookTemplate = JSON.parse(await readFile(path.resolve('worldbook/template.json'), 'utf8'));
+assert.match(worldbookTemplate.opening_background, /4-6 个自然段[\s\S]*普通人[\s\S]*隐藏真相/, '世界书模板必须明确开场完整度与公开信息边界');
+const dmCharacterTemplate = JSON.parse(await readFile(path.resolve('worldbook/dm_character.template.json'), 'utf8'));
+assert.match(dmCharacterTemplate.system_prompt, /narrative通常写3-5个自然段[\s\S]*summary通常写3-4个自然段/, 'DM模板必须继承统一的回合信息量要求');
+assert.match(dmCharacterTemplate.system_prompt, /只写角色能够看到[\s\S]*story_state\/shared\/flags/, 'DM模板必须继承玩家正文与后台状态边界');
 
 const pageHtml = await readFile(path.resolve('public/index.html'), 'utf8');
 const pageCss = await readFile(path.resolve('public/css/style.css'), 'utf8');

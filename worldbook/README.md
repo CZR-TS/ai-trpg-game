@@ -39,6 +39,15 @@
 - 玩家在背景页完成角色资料后，AI 才根据双方角色生成第一回合；固定背景不交给 AI 重新改写。
 - 更新世界背景时，直接修改 JSON 顶层的 `opening_background`，再重新导入或部署该世界书。
 - `opening_background` 只负责玩家最开始看到的固定介绍；后续世界设定仍由 `constant` 条目和关键词条目注入 AI。
+- 建议用 4-6 个自然段、至少约 500 个中文字符，覆盖主要地理、社会/种族、力量体系、重要历史、主要势力、当前危机和普通人的生存处境；不写某一局角色经历、隐藏真相或后台状态。
+- 可以用 `\n\n` 分段并用 `**重点文字**` 少量强调专有名词。完整要求见 [GUIDE.md](./GUIDE.md#固定开场背景的内容要求)。
+
+## 配套DM角色卡与通用叙事要求
+
+- 创建新世界时，同时复制 [`dm_character.template.json`](./dm_character.template.json) 作为配套角色卡，只填写本世界特有的题材风格、规则和随机事件策略。
+- 所有世界统一继承项目全局系统提示词：`narrative` 通常为 3-5 段、约 450-800 个中文字符；`summary` 通常为 3-4 段、约 300-550 个中文字符。
+- 玩家正文只能包含角色可以感知或推断的故事内容。“互信建立、目标更新、探索方向、内部状态、幕后规划”等系统结论只能进入 `story_state/shared/flags`，不能直接写给玩家。
+- 世界专属 `system_prompt` 不得覆盖或削弱上述通用要求。详细边界与示例见 [GUIDE.md](./GUIDE.md#系统提示词与玩家正文边界所有世界通用)。
 
 ## 条目（Entry）字段
 
@@ -103,4 +112,4 @@
 
 ## 示例
 
-见 `examples/fantasy-example/worldbook.json`。
+见 `template.json`、`dm_character.template.json` 与 `examples/xuanhuan-example/worldbook.json`。

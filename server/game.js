@@ -821,9 +821,9 @@ async function generateNode(room, config, charCard, {
     const endingRule = allowEnding
       ? '玩家已明确要求结束故事，请在本次返回完整 ending，并让 ending.text 自然分段。'
       : '玩家没有明确要求结束故事，ending 必须为 null；即使 progress 达到 1 也必须继续游戏。';
-    instruction = `【本回合双方选择】\n玩家A：${choiceA}\n玩家B：${choiceB}\n【指令】总结本回合两位玩家行动的后果：summary 字段用 2-3 个自然段分别写清行动后果与状态变化，并用 **文字** 少量强调关键结果；更新 story_state（字段可自由增减）与 progress。${endingRule}`;
+    instruction = `【本回合双方选择】\n玩家A：${choiceA}\n玩家B：${choiceB}\n【指令】总结本回合两位玩家行动的后果：summary 通常写 3-4 个自然段、约 300-550 个中文字符，分别交代行动过程、直接结果、代价、人物反应和新线索，并用 **文字** 少量强调关键结果。summary 只能写角色可感知的故事内容；“互信建立、目标更新、探索方向、内部状态、幕后规划”等系统结论只写入 story_state/shared/flags，不得直接讲给玩家。更新 story_state（字段可自由增减）与 progress。${endingRule}`;
   } else {
-    instruction = `【上一回合结果】${summary || '（无）'}\n【指令】基于当前局势继续剧情：narrative 给出 2-4 个自然段，按场景与动作节奏换段，并用 **文字** 少量强调关键名词或变化；给出双方下一轮选择（choices_A / choices_B），更新 story_state 与 progress。`;
+    instruction = `【上一回合结果】${summary || '（无）'}\n【指令】基于当前局势继续剧情：narrative 通常写 3-5 个自然段、约 450-800 个中文字符，补足场景推进、双方角色的具体行动与反应、可观察细节、因果和至少一项有效信息，并用 **文字** 少量强调关键名词或变化；不得用空泛气氛凑字数，也不得向玩家透露内部状态或幕后规划。给出双方下一轮选择（choices_A / choices_B），更新 story_state 与 progress。`;
   }
 
   // 固定世界设定放在稳定的 system 前缀中，后续回合可复用提示词缓存。

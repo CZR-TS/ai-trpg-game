@@ -12,7 +12,7 @@
     "opening_background": {
       "type": "string",
       "minLength": 1,
-      "description": "同一世界所有游戏共用的固定初始背景；角色创建完成后再由 AI 生成个性化第一回合"
+      "description": "同一世界所有游戏共用、直接展示给玩家的固定初始背景。应完整覆盖地理/社会、力量体系、历史、势力、当前危机与普通人生存处境，不得包含玩家角色经历、隐藏真相或系统内部状态；角色创建完成后再由 AI 生成个性化第一回合"
     },
     "scan_depth": { "type": ["integer", "null"], "minimum": 0 },
     "token_budget": { "type": ["integer", "null"], "minimum": 0 },
