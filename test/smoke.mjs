@@ -170,6 +170,8 @@ const main = async () => {
   const nextB = await emitAck(playerB, 'game:next');
   let current = await firstRoundPromise;
   check('双方确认后进入首轮', nextA.ok && nextB.ok && current.round === 1);
+  check('首轮叙事包含自然分段和安全粗体标记',
+    current.narrative.includes('\n\n') && current.narrative.includes('**前方岔路**'));
   const invalidChoice = await emitAck(playerA, 'game:choice', { choiceId: 'x'.repeat(201) });
   check('超长自由行动被拒绝', invalidChoice.ok === false);
 

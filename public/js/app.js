@@ -847,9 +847,9 @@
     na.appendChild(UI.el('div', { class: 'info-page-head' }, [
       UI.icon('scroll-text'), UI.el('h2', { text: '世界背景' }),
     ]));
-    na.appendChild(UI.el('div', { class: 'info-block' }, [
-      UI.el('p', { class: 'info-world', text: (intro && intro.world) || '（开场信息生成中…）' }),
-    ]));
+    const worldText = UI.el('div', { class: 'info-world rich-text' });
+    UI.renderRichText(worldText, (intro && intro.world) || '（开场信息生成中…）');
+    na.appendChild(UI.el('div', { class: 'info-block' }, [worldText]));
 
     const form = UI.el('form', {
       class: 'profile-form',
@@ -935,11 +935,11 @@
         UI.el('div', { class: 'reveal-item' }, [UI.el('b', { text: summary.playerNames?.B || state.room?.players?.B?.name || '玩家 B' }), UI.el('span', { text: summary.choiceB || '（未行动）' })]),
       ]);
       na.appendChild(revealBox);
-      const body = UI.el('div', { class: 'narrative-text' });
+      const body = UI.el('div', { class: 'narrative-text rich-text' });
       na.appendChild(body);
       const text = summary.summary || '（本回合没有新的变化）';
       if (typedDone.summary === text) {
-        body.textContent = text;
+        UI.renderRichText(body, text);
       } else {
         typedDone.summary = text;
         typeNarrative(body, text);
@@ -987,12 +987,12 @@
   // ---- 叙事打字机 ----
   function typeNarrative(el, text, onDone) {
     if (narrativeTyping.timer) clearInterval(narrativeTyping.timer);
-    el.textContent = '';
+    UI.renderRichText(el, '');
     narrativeTyping = { active: true, text };
     let i = 0;
     const step = () => {
       i = Math.min(text.length, i + 3);
-      el.textContent = text.slice(0, i);
+      UI.renderRichText(el, text.slice(0, i));
       if (i >= text.length) {
         clearInterval(narrativeTyping.timer);
         narrativeTyping.active = false;
@@ -1016,7 +1016,7 @@
     na.appendChild(UI.el('div', { class: 'narrative-head' }, [
       UI.el('span', { class: 'dm-tag' }, [UI.icon('dices'), UI.el('span', { text: 'DM · 第 ' + node.round + ' 回合' })]),
     ]));
-    const body = UI.el('div', { class: 'narrative-text' });
+    const body = UI.el('div', { class: 'narrative-text rich-text' });
     na.appendChild(body);
     renderStatusPanel(node.story_state, state.me.role);
     const bar = $('action-bar');
@@ -1296,15 +1296,19 @@
       UI.icon('crown', 'ending-icon'),
       UI.el('h1', { text: ending.title }),
     ]));
-    box.appendChild(UI.el('div', { class: 'ending-text', text: ending.text }));
+    const endingText = UI.el('div', { class: 'ending-text rich-text' });
+    UI.renderRichText(endingText, ending.text);
+    box.appendChild(endingText);
 
     // 本局回顾（封缄回合事后揭秘）
     const recap = UI.el('div', { class: 'recap' });
     recap.appendChild(UI.el('div', { class: 'recap-title' }, [UI.icon('history'), UI.el('span', { text: '本局回顾' })]));
     (ending.history || []).forEach((h) => {
       const sealed = h.reveal === false;
+      const recapText = UI.el('div', { class: 'recap-text rich-text' });
+      UI.renderRichText(recapText, h.narrative);
       const bodyKids = [
-        UI.el('div', { class: 'recap-text', text: h.narrative }),
+        recapText,
         UI.el('div', { class: 'recap-reveal' + (sealed ? ' sealed' : '') }, [
           UI.icon(sealed ? 'lock' : 'eye'),
           UI.el('span', { text: '第 ' + h.round + ' 回合 · ' + (sealed ? '封缄回合' : '公开回合') }),

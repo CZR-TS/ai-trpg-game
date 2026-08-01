@@ -641,6 +641,10 @@ input { font-family: inherit; }
 }
 .narrative.waiting .ai-tag { display: inline-flex; align-items: center; gap: var(--sp-2); }
 
+.rich-text > p { margin: 0; }
+.rich-text > p + p { margin-top: 1em; }
+.rich-text strong { color: var(--fg); font-weight: 700; }
+
 /* 选项区（单列：我的选项 → 对方状态行 → 推进按钮） */
 .choices-area {
   display: grid;

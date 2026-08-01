@@ -38,6 +38,41 @@ const UI = {
 
   clear(node) { while (node && node.firstChild) node.removeChild(node.firstChild); },
 
+  // 安全渲染叙事文本：仅支持自然段与 **粗体**，所有 HTML 均作为普通文字。
+  renderRichText(node, value) {
+    if (!node) return;
+    UI.clear(node);
+    const text = String(value ?? '')
+      .replace(/\r\n?/g, '\n')
+      .replace(/\\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    const paragraphs = text ? text.split(/\n+/).map((item) => item.trim()).filter(Boolean) : [''];
+    paragraphs.forEach((paragraph) => {
+      const p = UI.el('p');
+      UI.appendBoldText(p, paragraph);
+      node.appendChild(p);
+    });
+  },
+
+  appendBoldText(node, text) {
+    const source = String(text ?? '');
+    const pattern = /\*\*(.+?)\*\*/g;
+    let cursor = 0;
+    let match;
+    while ((match = pattern.exec(source))) {
+      if (match.index > cursor) node.appendChild(document.createTextNode(source.slice(cursor, match.index)));
+      if (match[1].trim()) {
+        node.appendChild(UI.el('strong', { text: match[1] }));
+      } else {
+        node.appendChild(document.createTextNode(match[0]));
+      }
+      cursor = match.index + match[0].length;
+    }
+    if (cursor < source.length) node.appendChild(document.createTextNode(source.slice(cursor)));
+    if (!source) node.appendChild(document.createTextNode(''));
+  },
+
   escapeHtml(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   },

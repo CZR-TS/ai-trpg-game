@@ -726,11 +726,11 @@ async function generateNode(room, config, charCard, { kind, history, choiceA, ch
   let instruction;
   if (kind === 'intro') {
     instruction =
-      '【指令】这是故事的开场，请一次性完成：1) intro 字段填写世界观背景简介与玩家A、玩家B各自的角色介绍；2) narrative 写出开场叙事（2-4段）；3) 给出双方第一轮选择；4) 初始化双方状态。';
+      '【指令】这是故事的开场，请一次性完成：1) intro.world 填写自然分段的世界观背景，intro.roleA/roleB 填写角色介绍；2) narrative 写出 2-4 个自然段的开场叙事，并用 **文字** 少量强调关键名词或变化；3) 给出双方第一轮选择；4) 初始化双方状态。';
   } else if (kind === 'summary') {
-    instruction = `【本回合双方选择】\n玩家A：${choiceA}\n玩家B：${choiceB}\n【指令】总结本回合两位玩家行动的后果：summary 字段给出结果反馈（2-4句，面向双方），更新 story_state（字段可自由增减）与 progress。若故事已到结局则填 ending。`;
+    instruction = `【本回合双方选择】\n玩家A：${choiceA}\n玩家B：${choiceB}\n【指令】总结本回合两位玩家行动的后果：summary 字段用 2-3 个自然段分别写清行动后果与状态变化，并用 **文字** 少量强调关键结果；更新 story_state（字段可自由增减）与 progress。若故事已到结局，ending.text 也必须自然分段。`;
   } else {
-    instruction = `【上一回合结果】${summary || '（无）'}\n【指令】基于当前局势继续剧情：narrative 给出下一段叙事（2-4段），给出双方下一轮选择（choices_A / choices_B），更新 story_state 与 progress。`;
+    instruction = `【上一回合结果】${summary || '（无）'}\n【指令】基于当前局势继续剧情：narrative 给出 2-4 个自然段，按场景与动作节奏换段，并用 **文字** 少量强调关键名词或变化；给出双方下一轮选择（choices_A / choices_B），更新 story_state 与 progress。`;
   }
 
   const system = buildSystemPrompt(charCard);
@@ -782,7 +782,7 @@ async function generateNode(room, config, charCard, { kind, history, choiceA, ch
     choicesA: ['继续前行', '停留观察'],
     choicesB: ['继续前行', '停留观察'],
     storyState: room.storyState,
-    summary: kind === 'summary' ? '（演示模式）本回合尘埃落定，两位玩家的选择带来了新的变数。' : null,
+    summary: kind === 'summary' ? '（演示模式）本回合尘埃落定，两位玩家的选择各自产生了结果。\n\n新的线索浮现，**局势**也随之发生变化。' : null,
   });
   node.story_state = organizeStoryState(node.story_state, room.players);
   if (!parsed) node.progress = Math.min(1, room.progress + 0.25);

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import * as game from '../server/game.js';
 import { activateEntries, loadWorldbookFile } from '../server/lorebook.js';
-import { buildHistoryText, normalizeNode } from '../server/llm.js';
+import { buildHistoryText, buildSystemPrompt, normalizeNarrativeText, normalizeNode } from '../server/llm.js';
 
 const config = {
   ai: { baseURL: '', apiKey: '', model: '', temperature: 0, maxTokens: 100 },
@@ -107,6 +107,20 @@ assert.deepEqual(normalized.choices_A, ['有效']);
 assert.deepEqual(normalized.choices_B, ['（自由行动）']);
 assert.deepEqual(normalized.story_state, { flag: true });
 assert.match(buildHistoryText([{ round: 1, narrative: 'n', choiceA: 'a', choiceB: 'b', storyState: { hp: 9 } }], 6), /"hp":9/);
+assert.equal(
+  normalizeNarrativeText('第一段。\\n\\n第二段包含 **关键线索**。'),
+  '第一段。\n\n第二段包含 **关键线索**。',
+  '转义换行必须统一为自然段'
+);
+const longNarrative = Array.from({ length: 70 }, (_, index) => `第${index + 1}句。`).join('');
+assert.match(normalizeNarrativeText(longNarrative), /\n\n/, '旧的超长单段叙事必须按完整句子补充分段');
+assert.equal(
+  normalizeNarrativeText('<script>alert(1)</script>\n\n**遗迹**苏醒。'),
+  '<script>alert(1)</script>\n\n**遗迹**苏醒。',
+  '文本规范化不能执行或吞掉 HTML 字样'
+);
+assert.match(buildSystemPrompt(character), /仅用 \*\*重点文字\*\*/, 'AI 提示词必须要求少量 Markdown 粗体');
+assert.match(buildSystemPrompt(character), /转义换行符 \\n\\n 分段/, 'AI 提示词必须要求自然分段');
 
 const organizedState = game.organizeStoryState({
   A: { name: '玩家A', hp: 100, 位置: '城门', 背包: ['弓'], flag_awareness: 1 },
@@ -151,6 +165,7 @@ assert.equal(loaded.token_budget, 2000);
 
 const pageHtml = await readFile(path.resolve('public/index.html'), 'utf8');
 const pageCss = await readFile(path.resolve('public/css/style.css'), 'utf8');
+const pageUi = await readFile(path.resolve('public/js/ui.js'), 'utf8');
 const pageApp = await readFile(path.resolve('public/js/app.js'), 'utf8');
 assert.match(pageHtml, /id="theme-toggle"[^>]+data-action="theme-toggle"/, '顶部必须提供主题切换按钮');
 assert.match(pageHtml, /<button class="brand"[\s\S]*?<span>共叙<\/span>/, '顶部品牌必须包含“共叙”文字');
@@ -159,12 +174,17 @@ assert.match(pageCss, /:root\[data-theme='dark'\]/, '样式表必须包含暗色
 assert.match(pageCss, /\.topbar-actions\s*\{/, '顶部操作区必须为品牌和主题按钮预留布局');
 assert.match(pageApp, /localStorage\.setItem\(THEME_KEY, next\)/, '主题选择必须写入本地存储');
 assert.match(pageApp, /dark \? 'sun' : 'moon'/, '主题按钮必须使用 Lucide 的太阳/月亮图标');
-assert.match(pageHtml, /style\.css\?v=20260801-14/, '角色塑造更新后必须刷新静态资源版本');
+assert.match(pageHtml, /style\.css\?v=20260801-15/, '叙事排版更新后必须刷新静态资源版本');
 assert.match(pageHtml, /入场昵称尽量独特[\s\S]*重连时仍用此昵称[\s\S]*剧情昵称不同/, '玩家入口必须用两行短句解释身份昵称');
 assert.match(pageCss, /\.offline-banner\[hidden\]\s*\{\s*display:\s*none/, '未离线时不得显示空的警告横幅');
 assert.match(pageApp, /async \(event\)[\s\S]*client\.saveProfile/, '开场页必须提供角色资料保存交互');
 assert.doesNotMatch(pageApp, /入场昵称只用于身份重连/, '角色塑造卡片不应重复显示身份昵称说明');
 assert.match(pageCss, /\.profile-form\s*\{/, '角色塑造表单必须有独立布局');
+assert.match(pageUi, /renderRichText\(node, value\)/, '前端必须提供统一的安全叙事渲染器');
+assert.match(pageUi, /document\.createTextNode/, '叙事内容必须通过文本节点渲染，不能直接信任 AI HTML');
+assert.match(pageUi, /UI\.el\('strong', \{ text: match\[1\] \}\)/, '安全渲染器必须支持 Markdown 粗体');
+assert.match(pageApp, /UI\.renderRichText\(worldText/, '世界背景必须使用统一叙事渲染器');
+assert.match(pageApp, /UI\.renderRichText\(endingText/, '结局必须使用统一叙事渲染器');
 assert.doesNotMatch(pageApp, /action === 'goto-(?:admin|player)'[\s\S]{0,120}leaveCurrentRoom/, '顶部工作区切换不能离开玩家房间');
 assert.match(pageApp, /WORKSPACE_KEY = 'trpg_workspace_v1'/, '当前工作区必须本地记忆');
 assert.match(pageApp, /管理员登录态与玩家房间态分别恢复/, '刷新时必须分别恢复两个工作区');
