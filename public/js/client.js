@@ -58,6 +58,7 @@ class GameClient {
   async submitChoice(choiceId) {}        // emit game:choice {choiceId}
   async advance() {}                     // emit game:advance
   async next() {}                        // emit game:next（双方确认「开始冒险 / 下一步」）
+  async abandon() {}                     // emit game:abandon（对方离线时结束本局）
   async leave() {}                       // emit room:leave，主动离开当前房间
 }
 
@@ -315,6 +316,17 @@ class MockClient extends GameClient {
     return { ok: true };
   }
 
+  async abandon() {
+    const room = this._myRoom();
+    if (!room || !this.me || room.status !== 'playing') return { ok: false, error: '当前不能结束本局' };
+    room.status = 'ended';
+    room.phase = 'ended';
+    room.ending = { title: '本局结束', text: `${this.me.name} 结束了本局。` };
+    this.bus.emit('room:state', { room: this._publicRoom(room) });
+    this.bus.emit('game:ended', { ending: this._buildEnding(room), progress: 1 });
+    return { ok: true };
+  }
+
   async leave() {
     const room = this._myRoom();
     if (!room || !this.me) return { ok: true, reconnectable: false };
@@ -554,7 +566,7 @@ class SocketClient extends GameClient {
     const events = [
       'room:state', 'player:joined', 'player:reconnected', 'player:disconnected',
       'player:ready', 'game:started', 'game:starting', 'game:intro', 'game:round', 'game:choice_update',
-      'game:summary', 'game:next_update', 'game:judging', 'game:ended',
+      'game:summary', 'game:next_update', 'game:preload_status', 'game:judging', 'game:ended',
     ];
     events.forEach((event) => this.socket.on(event, (payload) => this.bus.emit(event, payload)));
     this.socket.on('disconnect', () => {
@@ -625,6 +637,7 @@ class SocketClient extends GameClient {
   submitChoice(choiceId) { return this._emitAck('game:choice', { choiceId }); }
   advance() { return this._emitAck('game:advance'); }
   next() { return this._emitAck('game:next'); }
+  abandon() { return this._emitAck('game:abandon'); }
   async leave() {
     if (!this.socket || !this.lastJoin) return { ok: true, reconnectable: false };
     const ack = await this._emitAck('room:leave');

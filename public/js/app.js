@@ -12,7 +12,8 @@
     room: null,            // 房间全量镜像（room:state 推送）
     me: null,              // { role, name }
     game: { phase: 'intro', intro: null, summary: null, next: { me: false, opp: false }, starting: false }, // intro | round | summary | judging | ended
-    turn: { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, judging: false },
+    turn: { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, judging: false, customText: null },
+    oppOffline: false, // 对方是否离线（游戏中）
   };
 
   // ============ 视图切换 ============
@@ -55,6 +56,7 @@
     if (state.me) await client.leave();
     state.room = null;
     state.me = null;
+    state.oppOffline = false;
     clearSession();
     resetTurn();
   }
@@ -111,19 +113,26 @@
   }
 
   // ============ 事件订阅（对齐 Socket.IO 服务端→客户端事件名）============
-  client.on('room:state', ({ room }) => { state.room = room; render(); });
+  client.on('room:state', ({ room }) => {
+    state.room = room;
+    syncOpponentOffline();
+    render();
+  });
   client.on('connection:error', ({ error }) => UI.toast(error || '连接异常，请稍后重试'));
   client.on('player:joined', () => render());
   client.on('player:ready', () => render());
   client.on('game:started', () => { state.game.starting = false; });
   client.on('game:starting', () => { state.game.starting = true; render(); });
-  client.on('game:intro', ({ intro, round }) => {
+  client.on('game:intro', ({ intro, round, confirmed }) => {
     resetTurn();
+    syncOpponentOffline();
     state.game = { phase: 'intro', intro, summary: null, next: { me: false, opp: false }, starting: false };
+    restoreNextConfirm(confirmed);
     if (state.view !== 'game') switchView('game'); else render();
   });
   client.on('game:round', (payload) => {
     resetTurn();
+    syncOpponentOffline();
     if (state.room) {
       state.room.currentNode = payload;
       state.room.round = payload.round;
@@ -131,12 +140,32 @@
     }
     state.game.phase = 'round';
     state.game.next = { me: false, opp: false };
+    // 重连恢复：提交状态 + 自己的选择（仅本人可见），避免重复提交
+    const meRole = state.me && state.me.role;
+    if (meRole && payload.submitted) {
+      if (payload.submitted[meRole]) {
+        state.turn.submitted = true;
+        const own = payload.ownChosen;
+        if (own) {
+          const choices = meRole === 'A' ? payload.choices_A : payload.choices_B;
+          const isPreset = (Array.isArray(choices) ? choices : []).some((c) => {
+            const t = typeof c === 'string' ? c : (c && (c.text || c.id || c.label));
+            return t === own;
+          });
+          state.turn.myChoiceId = own;
+          state.turn.customText = isPreset ? null : own;
+        }
+      }
+      state.turn.oppSubmitted = !!payload.submitted[OPP(meRole)];
+    }
     if (state.view !== 'game') switchView('game'); else render();
   });
   client.on('game:summary', (payload) => {
+    syncOpponentOffline();
     state.game.phase = 'summary';
     state.game.summary = payload;
     state.game.next = { me: false, opp: false };
+    restoreNextConfirm(payload.confirmed);
     if (state.view !== 'game') switchView('game'); else render();
   });
   client.on('game:preload_status', ({ status }) => {
@@ -174,8 +203,41 @@
   });
   client.on('game:ended', ({ ending }) => {
     if (state.room) state.room.ending = ending;
+    state.oppOffline = false;
     switchView('ending');
   });
+
+  // 对方离线/重连提示（游戏中一方掉线时显示横幅 + 结束本局）
+  client.on('player:disconnected', ({ role }) => {
+    if (state.me && role === OPP(state.me.role)) {
+      state.oppOffline = true;
+      if (state.view === 'game') render();
+    }
+  });
+  client.on('player:reconnected', ({ role }) => {
+    if (state.me && role === OPP(state.me.role)) {
+      state.oppOffline = false;
+      if (state.view === 'game') render();
+    }
+  });
+
+  // 重连时恢复「开始冒险/下一步」的双方确认状态
+  function restoreNextConfirm(confirmed) {
+    if (!confirmed || !state.me) return;
+    state.game.next = {
+      me: !!confirmed[state.me.role],
+      opp: !!confirmed[OPP(state.me.role)],
+    };
+  }
+
+  function syncOpponentOffline() {
+    if (!state.me || !state.room || state.room.status !== 'playing') {
+      state.oppOffline = false;
+      return;
+    }
+    const opponent = state.room.players?.[OPP(state.me.role)];
+    state.oppOffline = !!opponent && opponent.online === false;
+  }
 
   // ============ 1. 管理员登录 ============
   $('form-login').addEventListener('submit', async (e) => {
@@ -646,6 +708,7 @@
     const g = state.game;
     const node = room && room.currentNode;
     renderTopbar(room, node);
+    renderOfflineBanner();
     // intro / summary / 等待阶段隐藏选择区（避免出现空的白色方框）
     const choicesArea = document.querySelector('.choices-area');
     if (choicesArea) choicesArea.style.display = g.phase === 'round' && node ? '' : 'none';
@@ -687,6 +750,34 @@
   function clearGameAreas() {
     UI.clear($('narrative-area')); UI.clear($('my-choices')); UI.clear($('opp-choices'));
     UI.clear($('action-bar')); UI.clear($('status-panel'));
+  }
+
+  // ---- 对方离线横幅 + 结束本局 ----
+  function renderOfflineBanner() {
+    const box = $('offline-banner');
+    if (!box) return;
+    UI.clear(box);
+    if (!state.oppOffline) { box.hidden = true; return; }
+    box.hidden = false;
+    const oppRole = OPP(state.me.role);
+    const oppName = ((state.room?.storyState && state.room.storyState[oppRole]) || {}).name
+      || state.room?.players?.[oppRole]?.name
+      || '对方';
+    box.appendChild(UI.el('div', { class: 'offline-banner-text' }, [
+      UI.icon('wifi-off'),
+      UI.el('span', { text: `${oppName} 已离线，等待重连中…（30 分钟后自动结束）` }),
+    ]));
+    box.appendChild(UI.el('button', {
+      class: 'btn btn-sm btn-danger', type: 'button',
+      onclick: abandonGame,
+    }, [UI.icon('flag'), UI.el('span', { text: '结束本局' })]));
+  }
+
+  async function abandonGame() {
+    if (!window.confirm('对方已离线。结束本局后，本局故事会完整保存，但无法继续游玩。确定结束吗？')) return;
+    const res = await client.abandon();
+    if (!res || !res.ok) { UI.toast((res && res.error) || '结束本局失败'); return; }
+    // 后端会广播 game:ended，前端自动进入结局页
   }
 
   // ---- 开场信息页：世界观背景 + 双方角色 + 开始冒险 ----

@@ -1,7 +1,7 @@
 import express from 'express';
 import {
   listWorldbooks, importWorldbook, createRoom, rooms, getWorldbook,
-  listRoomHistory, saveRoomHistory, roomHistoryStorage, deleteRoomHistory,
+  archiveCurrentRound, listRoomHistory, saveRoomHistory, removeActiveRoom, roomHistoryStorage, deleteRoomHistory,
 } from './game.js';
 import { config, saveConfig } from './config.js';
 
@@ -115,8 +115,10 @@ export function createAdminRouter() {
   router.post('/rooms/:id/close', (req, res) => {
     const room = rooms.get(req.params.id);
     if (!room) return res.status(404).json({ error: '房间不存在' });
+    archiveCurrentRound(room);
     room.status = 'ended';
     saveRoomHistory(room);
+    removeActiveRoom(room.id);
     res.json({ ok: true });
   });
 

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { readFile } from 'node:fs/promises';
 import * as game from '../server/game.js';
 import { activateEntries, loadWorldbookFile } from '../server/lorebook.js';
 import { buildHistoryText, normalizeNode } from '../server/llm.js';
@@ -51,6 +52,29 @@ assert.equal(prefetchedNode.story_state.A.name, '预载甲', '预加载节点必
 preloadRoom.worldbook = null;
 const reusedNext = await game.proceedNext(preloadRoom, config, character);
 assert.equal(reusedNext.node, prefetchedNode, '双方确认时必须复用预加载结果，不能再次请求 AI');
+
+const introRoom = game.createRoom({ worldbookId: 'fantasy-example' });
+introRoom.players.A = { name: '确认甲', ready: true, sockId: null };
+introRoom.players.B = { name: '确认乙', ready: true, sockId: null };
+await game.startRoom(introRoom, config, character);
+assert.equal(game.confirmNext(introRoom, 'A'), false);
+let activeSnapshot = JSON.parse(await readFile(
+  path.resolve('data/room-active', introRoom.id + '.json'), 'utf8'
+));
+assert.equal(activeSnapshot.nextConfirm.A, true, '单方确认必须立即写入进行中存档');
+game.confirmNext(introRoom, 'B');
+await game.proceedNext(introRoom, config, character);
+activeSnapshot = JSON.parse(await readFile(
+  path.resolve('data/room-active', introRoom.id + '.json'), 'utf8'
+));
+assert.equal(activeSnapshot.phase, 'round', '开场进入首轮后必须保存新阶段');
+assert.deepEqual(activeSnapshot.nextConfirm, { A: false, B: false }, '进入首轮后确认状态必须重置');
+
+const historyBeforeArchive = introRoom.history.length;
+game.archiveCurrentRound(introRoom);
+assert.equal(introRoom.history.length, historyBeforeArchive + 1, '中途结束必须归档当前叙事');
+game.archiveCurrentRound(introRoom);
+assert.equal(introRoom.history.length, historyBeforeArchive + 1, '重复归档不能复制当前叙事');
 
 const brokenRoom = game.createRoom({ worldbookId: 'fantasy-example' });
 brokenRoom.worldbook = null;
@@ -106,3 +130,4 @@ const loaded = loadWorldbookFile(path.resolve('worldbook/examples/fantasy-exampl
 assert.equal(loaded.scan_depth, 4);
 assert.equal(loaded.token_budget, 2000);
 console.log('后端单元测试通过');
+for (const testRoom of [room, preloadRoom, introRoom, brokenRoom]) game.removeActiveRoom(testRoom.id);

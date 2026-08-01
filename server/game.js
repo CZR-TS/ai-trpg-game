@@ -17,6 +17,7 @@ export const worldbooks = new Map();
 
 const WB_DIR = path.join(process.cwd(), 'data', 'worldbooks');
 const HISTORY_DIR = path.join(process.cwd(), 'data', 'room-history');
+const ACTIVE_DIR = path.join(process.cwd(), 'data', 'room-active');
 export const ROOM_HISTORY_LIMIT_BYTES = 200 * 1024 * 1024;
 const VALID_WORLDBOOK_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const VALID_ROOM_CODE = /^[A-Z2-9]{4,16}$/;
@@ -156,6 +157,7 @@ export function createRoom({ worldbookId, code, roomCodeLen = 8 }) {
     history: [],
     processing: false,
     ending: null,
+    offSince: { A: null, B: null },
     createdAt: Date.now(),
   };
   rooms.set(room.id, room);
@@ -216,6 +218,108 @@ export function saveRoomHistory(room) {
   } catch (e) {
     console.warn('[存档] 历史保存失败：', e.message);
   }
+}
+
+/** 将尚未进入 history 的当前叙事补入归档，供中途结束/超时结束使用。 */
+export function archiveCurrentRound(room) {
+  if (!room?.currentNode || room.history.at(-1)?.round === room.round) return;
+  room.history.push({
+    round: room.round,
+    narrative: room.currentNode.narrative,
+    choiceA: room.chosen.A,
+    choiceB: room.chosen.B,
+    reveal: room.currentNode.reveal,
+    storyState: room.currentNode.story_state,
+  });
+}
+
+/** 进行中房间落盘（服务器重启后自动恢复；不含世界书对象与预生成节点） */
+export function saveActiveRoom(room) {
+  if (!room || room.status !== 'playing') return;
+  try {
+    fs.mkdirSync(ACTIVE_DIR, { recursive: true });
+    const snapshot = {
+      id: room.id,
+      code: room.code,
+      worldbookId: room.worldbookId,
+      hostRole: room.hostRole,
+      status: room.status,
+      phase: room.phase,
+      players: {
+        A: room.players.A ? { name: room.players.A.name, ready: room.players.A.ready } : null,
+        B: room.players.B ? { name: room.players.B.name, ready: room.players.B.ready } : null,
+      },
+      round: room.round,
+      progress: room.progress,
+      storyState: room.storyState,
+      currentNode: room.currentNode,
+      currentSummary: room.currentSummary,
+      nextConfirm: room.nextConfirm,
+      submitted: room.submitted,
+      chosen: room.chosen,
+      openingStatus: room.openingStatus,
+      nextRoundStatus: room.nextRoundStatus,
+      history: room.history,
+      ending: room.ending,
+      offSince: room.offSince,
+      createdAt: room.createdAt,
+    };
+    fs.writeFileSync(path.join(ACTIVE_DIR, room.id + '.json'), JSON.stringify(snapshot), 'utf8');
+  } catch (e) {
+    console.warn('[存档] 进行中房间保存失败：', e.message);
+  }
+}
+
+/** 删除进行中房间存档 */
+export function removeActiveRoom(id) {
+  try {
+    fs.rmSync(path.join(ACTIVE_DIR, String(id) + '.json'), { force: true });
+  } catch {}
+}
+
+/** 启动时恢复进行中的房间；返回恢复数量 */
+export function loadActiveRooms() {
+  if (!fs.existsSync(ACTIVE_DIR)) return 0;
+  let restored = 0;
+  for (const file of fs.readdirSync(ACTIVE_DIR)) {
+    if (!file.endsWith('.json')) continue;
+    try {
+      const data = JSON.parse(fs.readFileSync(path.join(ACTIVE_DIR, file), 'utf8'));
+      if (!data || typeof data !== 'object' || !data.id || data.status !== 'playing') {
+        removeActiveRoom(file.replace(/\.json$/, ''));
+        continue;
+      }
+      const worldbook = getWorldbook(data.worldbookId);
+      if (!worldbook) {
+        console.warn('[存档] 世界书不存在，跳过恢复：', data.worldbookId);
+        removeActiveRoom(data.id);
+        continue;
+      }
+      const room = {
+        ...data,
+        worldbook,
+        players: {
+          A: data.players?.A ? { ...data.players.A, sockId: null } : null,
+          B: data.players?.B ? { ...data.players.B, sockId: null } : null,
+        },
+        openingNode: null,
+        openingPromise: null,
+        nextRoundNode: null,
+        nextRoundPromise: null,
+        processing: false,
+        // 进程重启后所有 Socket 都已断开，应从本次启动重新计算离线超时。
+        offSince: {
+          A: data.players?.A ? Date.now() : null,
+          B: data.players?.B ? Date.now() : null,
+        },
+      };
+      rooms.set(room.id, room);
+      restored += 1;
+    } catch (e) {
+      console.warn('[存档] 恢复房间失败：', file, e.message);
+    }
+  }
+  return restored;
 }
 
 /** 读取全部历史记录（按结束时间倒序） */
@@ -382,6 +486,7 @@ export async function startRoom(room, config, charCard) {
     room.phase = 'intro';
     room.nextConfirm = { A: false, B: false };
     room.status = 'playing';
+    saveActiveRoom(room);
     return node;
   } finally {
     room.processing = false;
@@ -435,6 +540,7 @@ export async function advanceRoom(room, config, charCard) {
         room.currentSummary.ending ||
         { title: '结局', text: node.summary || node.narrative || '故事走向了终点。' };
       saveRoomHistory(room);
+      removeActiveRoom(room.id);
       return {
         type: 'ended',
         ending: room.ending,
@@ -445,6 +551,7 @@ export async function advanceRoom(room, config, charCard) {
       };
     }
     room.phase = 'summary';
+    saveActiveRoom(room);
     preloadNextRound(room, config, charCard);
     return {
       type: 'summary',
@@ -462,6 +569,7 @@ export async function advanceRoom(room, config, charCard) {
 export function confirmNext(room, role) {
   if (!room.players[role]) return false;
   room.nextConfirm[role] = true;
+  saveActiveRoom(room);
   return !!(room.nextConfirm.A && room.nextConfirm.B);
 }
 
@@ -497,6 +605,8 @@ export async function proceedNext(room, config, charCard) {
   try {
     if (room.phase === 'intro') {
       room.phase = 'round';
+      room.nextConfirm = { A: false, B: false };
+      saveActiveRoom(room);
       return { type: 'round', node: room.currentNode };
     }
     if (room.phase === 'summary') {
@@ -510,6 +620,7 @@ export async function proceedNext(room, config, charCard) {
       room.storyState = node.story_state;
       room.phase = 'round';
       room.nextConfirm = { A: false, B: false };
+      saveActiveRoom(room);
       return { type: 'round', node };
     }
     return null;

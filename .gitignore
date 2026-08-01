@@ -26,3 +26,6 @@ data/
 # 调试/截图产物
 .playwright-cli/
 output/
+
+# 本地部署打包产物
+deploy/*.tar.gz

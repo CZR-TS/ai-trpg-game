@@ -336,6 +336,33 @@ input { font-family: inherit; }
 }
 .online-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* ---------- 对方离线横幅 ---------- */
+.offline-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  justify-content: space-between;
+  flex-wrap: wrap;
+  padding: var(--sp-3) var(--sp-4);
+  margin: 0 0 var(--sp-4);
+  border: 1px solid rgba(180, 83, 9, 0.4);
+  border-radius: var(--radius);
+  background: rgba(180, 83, 9, 0.08);
+}
+.offline-banner-text {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 13px;
+  color: #b45309;
+}
+.offline-banner-text svg { width: 15px; height: 15px; }
+.btn-danger {
+  background: #dc2626;
+  color: #fff;
+}
+.btn-danger:hover { background: #b91c1c; }
+
 /* 世界书项 */
 .wb-item {
   display: flex;

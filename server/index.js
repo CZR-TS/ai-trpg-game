@@ -14,6 +14,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, '..', 'public');
 
 game.initWorldbookStore();
+const restoredCount = game.loadActiveRooms();
+if (restoredCount > 0) console.log(`[存档] 已恢复 ${restoredCount} 个进行中的房间`);
 const fallbackCharacter = game.loadCharacterCard(
   path.join(process.cwd(), 'worldbook', 'examples', 'fantasy-example', 'dm_character.json')
 );
@@ -124,6 +126,10 @@ io.on('connection', (socket) => {
         role,
         name: room.players[role].name,
       });
+      if (joined.reconnected && room.offSince) {
+        room.offSince[role] = null;
+        game.saveActiveRoom(room);
+      }
       emitRoomState(room);
       if (joined.reconnected && room.status === 'playing') {
         if (room.phase === 'intro') socket.emit('game:intro', introView(room, room.currentNode));
@@ -158,6 +164,8 @@ io.on('connection', (socket) => {
     socket.leave(room.id);
     if (reconnectable) {
       room.players[role].sockId = null;
+      if (room.offSince) room.offSince[role] = Date.now();
+      game.saveActiveRoom(room);
       io.to(room.id).emit('player:disconnected', { role });
     } else {
       room.players[role] = null;
@@ -204,6 +212,7 @@ io.on('connection', (socket) => {
     if (!choice || choice.length > 200) return ack?.({ ok: false, error: '无效的选择' });
     room.chosen[role] = choice;
     room.submitted[role] = true;
+    game.saveActiveRoom(room);
     const reveal = room.currentNode.reveal !== false;
     io.to(room.id).emit('game:choice_update', {
       role,
@@ -260,6 +269,7 @@ io.on('connection', (socket) => {
       ack?.({ ok: true });
     } catch (error) {
       room.nextConfirm = { A: false, B: false };
+      game.saveActiveRoom(room);
       console.error('[GAME] 阶段推进失败：', error);
       ack?.({ ok: false, error: '推进失败，请重试' });
     }
@@ -278,9 +288,32 @@ io.on('connection', (socket) => {
         return;
       }
       room.players[role].sockId = null;
+      if (room.offSince) room.offSince[role] = Date.now();
+      game.saveActiveRoom(room);
       io.to(room.id).emit('player:disconnected', { role });
       emitRoomState(room);
     }
+  });
+
+  // 在线方在对方离线时结束本局：存档后广播结局页
+  socket.on('game:abandon', (payload, ack) => {
+    const room = roomSocket(socket);
+    const role = socket.data.role;
+    if (!room || room.status !== 'playing') return ack?.({ ok: false, error: '当前不能结束本局' });
+    const opp = role === 'A' ? 'B' : 'A';
+    if (room.players[opp]?.sockId) return ack?.({ ok: false, error: '对方在线，不能结束本局' });
+    const me = room.players[role];
+    game.archiveCurrentRound(room);
+    room.status = 'ended';
+    room.phase = 'ended';
+    room.ending = {
+      title: '本局结束',
+      text: `${me?.name || '玩家 ' + role} 在对方离线后结束了本局。故事止于此，但仍完整保存。`,
+    };
+    game.saveRoomHistory(room);
+    game.removeActiveRoom(room.id);
+    io.to(room.id).emit('game:ended', endingPayload(room, room.ending.text));
+    ack?.({ ok: true });
   });
 });
 
@@ -293,6 +326,8 @@ function nodeView(room, node, viewerRole) {
     reveal: node.reveal,
     story_state: game.playerStoryStateView(node.story_state, viewerRole),
     progress: room.progress,
+    submitted: { A: !!room.submitted.A, B: !!room.submitted.B },
+    ownChosen: room.chosen[viewerRole] || null,
   };
 }
 
@@ -307,6 +342,7 @@ function introView(room, node) {
       roleB: intro.roleB || '玩家B',
     },
     round: room.round,
+    confirmed: { A: !!room.nextConfirm.A, B: !!room.nextConfirm.B },
   };
 }
 
@@ -321,10 +357,41 @@ function summaryView(room, viewerRole) {
     choiceB: s.choiceB ?? null,
     playerNames: { A: room.players.A?.name || '玩家 A', B: room.players.B?.name || '玩家 B' },
     preloadStatus: room.nextRoundStatus,
+    confirmed: { A: !!room.nextConfirm.A, B: !!room.nextConfirm.B },
   };
 }
 
+// 离线超时：playing 中一方离线超过 OFFLINE_TIMEOUT_MS，自动存档结束本局
+const OFFLINE_TIMEOUT_MS = 30 * 60 * 1000;
+function startOfflineTimeoutScan() {
+  setInterval(() => {
+    const now = Date.now();
+    for (const room of game.rooms.values()) {
+      if (room.status !== 'playing' || room.processing) continue;
+      const offlineRole = ['A', 'B'].find(
+        (role) => !room.players[role]?.sockId && room.offSince?.[role] && now - room.offSince[role] > OFFLINE_TIMEOUT_MS
+      );
+      if (!offlineRole) continue;
+      const onlineRole = offlineRole === 'A' ? 'B' : 'A';
+      console.log(`[GAME] 玩家 ${room.players[offlineRole]?.name} 离线超时，自动结束房间 ${room.code}`);
+      game.archiveCurrentRound(room);
+      room.status = 'ended';
+      room.phase = 'ended';
+      room.ending = {
+        title: '本局结束（离线超时）',
+        text: `玩家 ${room.players[offlineRole]?.name || '（离线者）'} 离线超过 30 分钟，本局自动存档结束。`,
+      };
+      game.saveRoomHistory(room);
+      game.removeActiveRoom(room.id);
+      const socketId = room.players[onlineRole]?.sockId;
+      if (socketId) io.to(socketId).emit('game:ended', endingPayload(room, room.ending.text));
+      emitRoomState(room);
+    }
+  }, 60 * 1000);
+}
+
 server.listen(config.server.port, config.server.host, () => {
+  startOfflineTimeoutScan();
   console.log('──────────────────────────────────────────────');
   console.log('AI 双人跑团服务已启动');
   console.log(`  本机访问:   http://127.0.0.1:${config.server.port}`);
