@@ -13,6 +13,8 @@ import {
 
 /** 房间表与世界书表（内存态，一期不做持久化） */
 export const rooms = new Map();
+export const CHAT_MESSAGE_MAX_LENGTH = 300;
+export const CHAT_ROOM_MAX_MESSAGES = 1000;
 export const worldbooks = new Map();
 
 const WB_DIR = path.join(process.cwd(), 'data', 'worldbooks');
@@ -187,6 +189,7 @@ export function createRoom({ worldbookId, code, roomCodeLen = 8 }) {
     tokenUsage: emptyTokenUsage(),
     nextRoundStatus: 'idle',
     history: [],
+    chatMessages: [],
     processing: false,
     ending: null,
     offSince: { A: null, B: null },
@@ -263,6 +266,40 @@ export function joinRoom(code, name) {
     sockId: null,
   };
   return { room, role, reconnected: false };
+}
+
+/**
+ * 房间内双人聊天：只保存纯文字，不进入房间公开快照、AI 上下文或故事历史。
+ * 进行中的房间会随 active snapshot 落盘，房间结束时由 clearRoomChat 清除。
+ */
+export function appendRoomChat(room, role, input) {
+  if (!room || room.status === 'ended') throw new Error('房间已结束');
+  if (!room.players?.[role]) throw new Error('玩家不存在');
+  const text = typeof input === 'string' ? input.trim() : '';
+  if (!text) throw new Error('消息不能为空');
+  if (Array.from(text).length > CHAT_MESSAGE_MAX_LENGTH) {
+    throw new Error(`消息不能超过 ${CHAT_MESSAGE_MAX_LENGTH} 字`);
+  }
+  const message = {
+    id: crypto.randomUUID(),
+    role,
+    senderName: playerDisplayName(room.players[role]) || `玩家 ${role}`,
+    text,
+    createdAt: Date.now(),
+  };
+  const history = Array.isArray(room.chatMessages) ? room.chatMessages : [];
+  room.chatMessages = [...history, message].slice(-CHAT_ROOM_MAX_MESSAGES);
+  if (room.status === 'playing') saveActiveRoom(room);
+  return message;
+}
+
+export function roomChatHistory(room) {
+  if (!room || room.status === 'ended') return [];
+  return (Array.isArray(room.chatMessages) ? room.chatMessages : []).map((message) => ({ ...message }));
+}
+
+export function clearRoomChat(room) {
+  if (room) room.chatMessages = [];
 }
 
 /** 保存房间历史到磁盘（结束/关闭时调用，服务重启不丢失） */
@@ -348,6 +385,7 @@ export function saveActiveRoom(room) {
       nextRoundStatus: room.nextRoundStatus,
       tokenUsage: room.tokenUsage,
       history: room.history,
+      chatMessages: room.chatMessages,
       ending: room.ending,
       offSince: room.offSince,
       createdAt: room.createdAt,
@@ -403,6 +441,7 @@ export function loadActiveRooms() {
         nextRoundNode: null,
         nextRoundPromise: null,
         processing: false,
+        chatMessages: (Array.isArray(data.chatMessages) ? data.chatMessages : []).slice(-CHAT_ROOM_MAX_MESSAGES),
         tokenUsage: { ...emptyTokenUsage(), ...(data.tokenUsage || {}), contextWindowTokens: MODEL_CONTEXT_WINDOW_TOKENS },
         // 进程重启后所有 Socket 都已断开，应从本次启动重新计算离线超时。
         offSince: {
@@ -652,6 +691,7 @@ export async function advanceRoom(room, config, charCard, onGenerationProgress) 
       room.ending =
         room.currentSummary.ending ||
         { title: '结局', text: node.summary || node.narrative || '故事走向了终点。' };
+      clearRoomChat(room);
       saveRoomHistory(room);
       removeActiveRoom(room.id);
       return {
@@ -900,7 +940,15 @@ async function generateNode(room, config, charCard, {
     summary: kind === 'summary' ? '（演示模式）本回合尘埃落定，两位玩家的选择各自产生了结果。\n\n新的线索浮现，**局势**也随之发生变化。' : null,
   });
   node.story_state = organizeStoryState(node.story_state, room.players);
-  if (!parsed) node.progress = room.progress;
+  if (!parsed) {
+    node.progress = room.progress;
+    if (kind === 'summary' && allowEnding) {
+      node.ending = {
+        title: '故事终章',
+        text: '两位冒险者依照自己的决定，为这段共同经历的旅程画下了句点。',
+      };
+    }
+  }
   else node.progress = Math.max(room.progress, node.progress);
   if (parsed) report({ phase: 'completed', contentChars: raw.length, completedFields: latestCompletedFields });
   room.generationProgress = null;

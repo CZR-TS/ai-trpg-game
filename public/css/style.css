@@ -1254,6 +1254,214 @@ button.choice-item:hover:not(:disabled) { border-color: var(--fg); background: v
   .choice-item .choice-mark { margin-top: 3px; }
 }
 
+/* ---------- 房间内双人聊天胶囊 ---------- */
+body.chat-visible .game-sheet { padding-bottom: 132px; }
+
+.player-chat {
+  position: fixed;
+  z-index: 35;
+  left: 50%;
+  bottom: max(14px, env(safe-area-inset-bottom));
+  width: min(430px, calc(100vw - 24px));
+  transform: translateX(-50%);
+}
+.player-chat[hidden] { display: none; }
+
+.player-chat-window {
+  height: 0;
+  margin-bottom: var(--sp-2);
+  overflow: hidden;
+  border: 1px solid var(--fg);
+  border-radius: 18px;
+  opacity: 0;
+  color: var(--fg);
+  background: var(--bg);
+  box-shadow: 0 12px 40px var(--shadow);
+  transform: translateY(12px) scale(0.98);
+  transform-origin: bottom center;
+  transition: height 0.32s var(--ease), opacity 0.18s ease, transform 0.32s var(--ease);
+}
+.player-chat.is-open .player-chat-window {
+  height: min(430px, calc(100dvh - 110px));
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+.player-chat-inner {
+  height: 430px;
+  max-height: calc(100dvh - 110px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  padding: 14px;
+}
+.player-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+.player-chat-head-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.player-chat-avatar {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--fg);
+  border-radius: 50%;
+  color: var(--bg);
+  background: var(--fg);
+  font-size: 11px;
+  font-weight: 600;
+}
+.player-chat-title { font-size: 13px; font-weight: 600; }
+.player-chat-sub { margin-top: 1px; color: var(--muted); font-size: 10px; }
+.player-chat-close { width: 30px; height: 30px; }
+.player-chat-close svg { width: 14px; height: 14px; }
+
+.player-chat-messages {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+  overflow-y: auto;
+  padding: 14px 2px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.player-chat-empty {
+  margin: auto;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+.player-chat-message { display: flex; flex-direction: column; align-items: flex-start; }
+.player-chat-message.is-mine { align-items: flex-end; }
+.player-chat-sender { margin: 0 7px 4px; color: var(--muted); font-size: 10px; }
+.player-chat-bubble {
+  max-width: 82%;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px 10px 10px 3px;
+  color: var(--fg);
+  background: var(--surface);
+  font-size: 13px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.player-chat-message.is-mine .player-chat-bubble {
+  border-color: var(--fg);
+  border-radius: 10px 10px 3px 10px;
+  color: var(--bg);
+  background: var(--fg);
+}
+.player-chat-time { margin: 3px 7px 0; color: var(--muted); font-size: 9px; }
+
+.player-chat-composer {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding-top: var(--sp-3);
+  border-top: 1px solid var(--border);
+}
+.player-chat-composer input {
+  min-width: 0;
+  height: 40px;
+  flex: 1;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  outline: none;
+  color: var(--fg);
+  background: var(--bg);
+  font-size: 13px;
+}
+.player-chat-composer input:focus { border-color: var(--fg); box-shadow: 0 0 0 1px var(--fg); }
+.player-chat-composer input::placeholder { color: var(--muted); }
+.player-chat-send {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--fg);
+  border-radius: 50%;
+  color: var(--bg);
+  background: var(--fg);
+}
+.player-chat-send:disabled { cursor: default; opacity: 0.3; }
+.player-chat-send svg { width: 15px; height: 15px; }
+
+.player-chat-capsule {
+  width: 100%;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px 7px 10px;
+  border: 1px solid var(--fg);
+  border-radius: 999px;
+  color: var(--bg);
+  background: var(--fg);
+  box-shadow: 0 8px 24px var(--shadow);
+  text-align: left;
+}
+.player-chat-capsule-icon {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  color: var(--fg);
+  background: var(--bg);
+}
+.player-chat-capsule-icon svg { width: 16px; height: 16px; }
+.player-chat-capsule-copy { min-width: 0; flex: 1; }
+.player-chat-capsule-copy strong,
+.player-chat-capsule-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.player-chat-capsule-copy strong { font-size: 12px; font-weight: 600; }
+.player-chat-capsule-copy span { margin-top: 2px; color: #b7b7b7; font-size: 10px; }
+.player-chat-unread {
+  min-width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0 6px;
+  border-radius: 999px;
+  color: var(--fg);
+  background: var(--bg);
+  font-size: 9px;
+  font-weight: 700;
+}
+.player-chat-unread[hidden] { display: none; }
+.player-chat-capsule-arrow {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid #444;
+  border-radius: 50%;
+  transition: transform 0.3s var(--ease);
+}
+.player-chat-capsule-arrow svg { width: 13px; height: 13px; }
+.player-chat.is-open .player-chat-capsule-arrow { transform: rotate(180deg); }
+.player-chat.is-open .player-chat-unread { display: none; }
+
+@media (max-width: 600px) {
+  .player-chat { bottom: max(10px, env(safe-area-inset-bottom)); }
+  body.chat-visible .game-sheet { padding-bottom: 124px; }
+}
+
 /* prefers-reduced-motion 兜底 */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

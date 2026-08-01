@@ -106,8 +106,8 @@ const main = async () => {
   check('在线昵称不能被其他连接顶号', duplicateName.ok === false);
   duplicateNameClient.close();
   check('两名玩家到齐后自动预加载开场', openingReady.room.openingStatus === 'ready');
-  check('玩家可收到服务端真实生成状态',
-    generationEvents.some((item) => item.kind === 'opening' && item.totalSections === 5));
+  check('固定世界背景无需重复调用 AI 生成',
+    !generationEvents.some((item) => item.kind === 'opening'));
   const secondJoin = await emitAck(playerA, 'room:join', { roomCode: room.code, name: '重复' });
   check('同一连接不能重复加入', secondJoin.ok === false);
   const leftPromise = waitFor(playerA, 'player:left');
@@ -126,14 +126,29 @@ const main = async () => {
   const intro = await introPromise;
   check('房主开始并收到开场介绍', startResult.ok && intro.round === 1 && typeof intro.intro?.world === 'string');
 
+  const chatForA = waitFor(playerA, 'chat:message');
+  const chatForB = waitFor(playerB, 'chat:message');
+  const sentChat = await emitAck(playerA, 'chat:send', { text: '这条消息在断线重连后也要保留' });
+  const [receivedByA, receivedByB] = await Promise.all([chatForA, chatForB]);
+  check('房间聊天实时广播给双方',
+    sentChat.ok && receivedByA.message?.id === receivedByB.message?.id
+      && receivedByB.message?.text === '这条消息在断线重连后也要保留');
+  const tooLongChat = await emitAck(playerA, 'chat:send', { text: '字'.repeat(301) });
+  check('超长聊天消息被服务端拒绝', tooLongChat.ok === false);
+
   const disconnectedPromise = waitFor(playerA, 'player:disconnected');
   playerB.close();
   await disconnectedPromise;
   playerB = await connectClient();
   const resumedIntroPromise = waitFor(playerB, 'game:intro');
+  const resumedChatHistoryPromise = waitFor(playerB, 'chat:history');
   const sameNameReconnect = await emitAck(playerB, 'room:join', { roomCode: room.code, name: '阿乙' });
   await resumedIntroPromise;
+  const resumedChatHistory = await resumedChatHistoryPromise;
   check('游戏开始后也可用同名认领离线席位', sameNameReconnect.ok && sameNameReconnect.role === 'B' && sameNameReconnect.reconnected === true);
+  check('玩家断线重连后恢复完整聊天记录',
+    sameNameReconnect.chatMessages?.some((message) => message.text === '这条消息在断线重连后也要保留')
+      && resumedChatHistory.messages?.some((message) => message.text === '这条消息在断线重连后也要保留'));
 
   const premature = await emitAck(playerA, 'game:choice', { choiceId: '继续前行' });
   check('开场确认前不能提前提交', premature.ok === false);
@@ -195,8 +210,9 @@ const main = async () => {
 
   let ending = null;
   for (let guard = 0; guard < 8 && !ending; guard++) {
-    const choiceA = await emitAck(playerA, 'game:choice', { choiceId: current.choices_A[0] });
-    const repeated = await emitAck(playerA, 'game:choice', { choiceId: current.choices_A[0] });
+    const actionA = guard === 7 ? '结束这场冒险，进入最终结局' : current.choices_A[0];
+    const choiceA = await emitAck(playerA, 'game:choice', { choiceId: actionA });
+    const repeated = await emitAck(playerA, 'game:choice', { choiceId: actionA });
     const choiceB = await emitAck(playerB, 'game:choice', { choiceId: current.choices_B[0] });
     check(`第${current.round}回合合法提交且禁止重复`, choiceA.ok && choiceB.ok && repeated.ok === false);
     const outcomePromise = waitForOutcome(playerA);
@@ -225,6 +241,7 @@ const main = async () => {
   const historyBody = await historyResponse.json();
   const saved = historyBody.history?.find((item) => item.code === room.code);
   check('后台历史接口返回已结束房间', historyResponse.status === 200 && saved?.history?.length > 0);
+  check('房间结束后聊天不进入永久历史记录', saved && !('chatMessages' in saved));
   check('历史存储上限固定为 200MB', historyBody.storage?.limitBytes === 200 * 1024 * 1024);
   check('历史存储用量和单条文件大小可统计', saved?.fileBytes > 0 && historyBody.storage?.usedBytes >= saved.fileBytes);
   const activeResponse = await fetch(BASE + '/api/admin/rooms', { headers: { Cookie: cookie } });

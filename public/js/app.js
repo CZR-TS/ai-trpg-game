@@ -16,6 +16,7 @@
     game: { phase: 'intro', intro: null, summary: null, next: { me: false, opp: false }, starting: false }, // intro | round | summary | judging | ended
     turn: { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, advanceFailed: false, judging: false, customText: null },
     oppOffline: false, // 对方是否离线（游戏中）
+    chat: { messages: [], open: false, unread: 0, sending: false },
   };
 
   // ============ 明暗主题 ============
@@ -82,6 +83,7 @@
       case 'game': renderGame(); break;
       case 'ending': renderEnding(); break;
     }
+    syncChatVisibility();
     UI.refreshIcons();
   }
 
@@ -107,9 +109,133 @@
     state.room = null;
     state.me = null;
     state.oppOffline = false;
+    resetChat();
     clearSession();
     resetTurn();
   }
+
+  // ============ 房间内双人聊天（独立局部渲染，不触碰回合输入）============
+  function normalizeChatMessages(messages) {
+    const unique = new Map();
+    (Array.isArray(messages) ? messages : []).forEach((message) => {
+      if (!message || typeof message.id !== 'string' || typeof message.text !== 'string') return;
+      unique.set(message.id, {
+        id: message.id,
+        role: message.role === 'B' ? 'B' : 'A',
+        senderName: String(message.senderName || (message.role === 'B' ? '玩家 B' : '玩家 A')),
+        text: message.text,
+        createdAt: Number(message.createdAt) || Date.now(),
+      });
+    });
+    return [...unique.values()].sort((a, b) => a.createdAt - b.createdAt).slice(-1000);
+  }
+
+  function resetChat() {
+    state.chat = { messages: [], open: false, unread: 0, sending: false };
+    const input = $('player-chat-input');
+    if (input) input.value = '';
+    renderChatMessages();
+    syncChatVisibility();
+  }
+
+  function setChatHistory(messages) {
+    state.chat.messages = normalizeChatMessages(messages);
+    state.chat.unread = 0;
+    renderChatMessages();
+    syncChatVisibility();
+  }
+
+  function appendChatMessage(message) {
+    const normalized = normalizeChatMessages([message])[0];
+    if (!normalized || state.chat.messages.some((item) => item.id === normalized.id)) return;
+    state.chat.messages = [...state.chat.messages, normalized].slice(-1000);
+    const isMine = !!state.me && normalized.role === state.me.role;
+    if (!isMine && (!state.chat.open || document.hidden)) state.chat.unread += 1;
+    renderChatMessages();
+    syncChatVisibility();
+  }
+
+  function chatClock(timestamp) {
+    try {
+      return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(timestamp));
+    } catch { return ''; }
+  }
+
+  function renderChatMessages() {
+    const box = $('player-chat-messages');
+    if (!box) return;
+    UI.clear(box);
+    if (!state.chat.messages.length) {
+      box.appendChild(UI.el('p', { class: 'player-chat-empty', text: '还没有消息，和队友说点什么吧。' }));
+      return;
+    }
+    state.chat.messages.forEach((message) => {
+      const mine = !!state.me && message.role === state.me.role;
+      box.appendChild(UI.el('div', { class: 'player-chat-message' + (mine ? ' is-mine' : '') }, [
+        UI.el('span', { class: 'player-chat-sender', text: mine ? '我' : message.senderName }),
+        UI.el('div', { class: 'player-chat-bubble', text: message.text }),
+        UI.el('span', { class: 'player-chat-time', text: chatClock(message.createdAt) }),
+      ]));
+    });
+    if (state.chat.open) requestAnimationFrame(() => { box.scrollTop = box.scrollHeight; });
+  }
+
+  function setChatOpen(open) {
+    state.chat.open = !!open;
+    if (state.chat.open) state.chat.unread = 0;
+    const dock = $('player-chat');
+    const windowEl = $('player-chat-window');
+    const toggle = $('player-chat-toggle');
+    if (dock) dock.classList.toggle('is-open', state.chat.open);
+    if (windowEl) windowEl.setAttribute('aria-hidden', String(!state.chat.open));
+    if (toggle) toggle.setAttribute('aria-expanded', String(state.chat.open));
+    syncChatVisibility();
+    if (state.chat.open) {
+      renderChatMessages();
+      setTimeout(() => $('player-chat-input')?.focus(), 220);
+    }
+  }
+
+  function syncChatVisibility() {
+    const dock = $('player-chat');
+    if (!dock) return;
+    const visible = state.view === 'game' && state.room?.status === 'playing' && !!state.me;
+    dock.hidden = !visible;
+    document.body.classList.toggle('chat-visible', visible);
+    if (!visible && state.chat.open) setChatOpen(false);
+    if (!visible) return;
+
+    const opponent = state.room?.players?.[OPP(state.me.role)];
+    const opponentName = opponent?.name || '队友';
+    $('player-chat-avatar').textContent = Array.from(opponentName)[0] || '友';
+    $('player-chat-title').textContent = `与${opponentName}聊天`;
+    $('player-chat-sub').textContent = `${opponent?.online === false ? '对方离线 · 消息将在重连后显示' : '双方在线'} · 仅玩家可见`;
+    const last = state.chat.messages.at(-1);
+    $('player-chat-capsule-title').textContent = last && last.role !== state.me.role ? `${last.senderName}发来消息` : '玩家聊天';
+    $('player-chat-capsule-preview').textContent = last ? last.text : '点击展开聊天';
+    const unread = $('player-chat-unread');
+    unread.textContent = String(Math.min(99, state.chat.unread));
+    unread.hidden = state.chat.unread <= 0 || state.chat.open;
+    $('player-chat-send').disabled = state.chat.sending || !$('player-chat-input').value.trim();
+  }
+
+  $('player-chat-toggle').addEventListener('click', () => setChatOpen(!state.chat.open));
+  $('player-chat-close').addEventListener('click', () => setChatOpen(false));
+  $('player-chat-input').addEventListener('input', syncChatVisibility);
+  $('player-chat-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (state.chat.sending) return;
+    const input = $('player-chat-input');
+    const text = input.value.trim();
+    if (!text) return;
+    state.chat.sending = true;
+    syncChatVisibility();
+    const result = await client.sendChat(text);
+    state.chat.sending = false;
+    if (result?.ok) input.value = '';
+    else UI.toast(result?.error || '消息发送失败');
+    syncChatVisibility();
+  });
 
   // ============ 通用辅助 ============
   function copyText(text) {
@@ -201,6 +327,8 @@
     render();
   });
   client.on('connection:error', ({ error }) => UI.toast(error || '连接异常，请稍后重试'));
+  client.on('chat:history', ({ messages }) => setChatHistory(messages));
+  client.on('chat:message', ({ message }) => appendChatMessage(message));
   client.on('player:joined', () => render());
   client.on('player:ready', () => render());
   client.on('game:started', () => { state.game.starting = false; });
@@ -315,6 +443,7 @@
     finishGeneration('summary');
     finishGeneration('preload');
     finishGeneration('ending');
+    resetChat();
     showPlayerView('ending');
   });
 
@@ -674,6 +803,7 @@
       if (res.room) state.room = res.room;
     if (res.ok) {
       state.me = { role: res.role, name: '组织者预览' };
+      setChatHistory(res.chatMessages);
       resetTurn();
       saveActiveWorkspace('player');
       switchView('lobby');
@@ -732,6 +862,7 @@
     if (res.ok) {
       if (res.room) state.room = res.room;
       state.me = { role: res.role, name };
+      setChatHistory(res.chatMessages);
       saveSession(roomCode, name);
       resetTurn();
       switchView('lobby');
@@ -1660,6 +1791,7 @@
       if (res && res.ok) {
         if (res.room) state.room = res.room;
         state.me = { role: res.role, name: sess.name };
+        setChatHistory(res.chatMessages);
         resetTurn();
         if (state.playerView === 'player-entry') state.playerView = 'lobby';
       } else {

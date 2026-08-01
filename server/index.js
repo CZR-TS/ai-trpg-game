@@ -86,6 +86,10 @@ function emitRoomState(room) {
   emitPlayerEvent(room, 'room:state', (role) => ({ room: playerRoomView(room, role) }));
 }
 
+function emitChatHistory(socket, room) {
+  socket.emit('chat:history', { messages: game.roomChatHistory(room) });
+}
+
 function generationEmitter(room) {
   return (progress) => io.to(room.id).emit('game:generation_progress', progress);
 }
@@ -127,7 +131,9 @@ io.on('connection', (socket) => {
         role,
         reconnected: joined.reconnected,
         room: playerRoomView(room, role),
+        chatMessages: game.roomChatHistory(room),
       });
+      emitChatHistory(socket, room);
       io.to(room.id).emit(joined.reconnected ? 'player:reconnected' : 'player:joined', {
         role,
         name: room.players[role].name,
@@ -201,6 +207,29 @@ io.on('connection', (socket) => {
       console.error('[GAME] 开局失败：', error);
       ack?.({ ok: false, error: '开局失败，请重试' });
       emitRoomState(room);
+    }
+  });
+
+  // 玩家聊天是独立实时通道，不进入 room:state、AI 上下文、世界书扫描或故事导出。
+  socket.on('chat:send', (payload, ack) => {
+    const room = roomSocket(socket);
+    const role = socket.data.role;
+    if (!room || !role) return ack?.({ ok: false, error: '未加入房间' });
+    if (room.status !== 'playing') return ack?.({ ok: false, error: '游戏开始后才能聊天' });
+
+    const now = Date.now();
+    const recent = (Array.isArray(socket.data.chatSentAt) ? socket.data.chatSentAt : [])
+      .filter((time) => now - time < 1000);
+    if (recent.length >= 5) return ack?.({ ok: false, error: '发送太快，请稍后再试' });
+    recent.push(now);
+    socket.data.chatSentAt = recent;
+
+    try {
+      const message = game.appendRoomChat(room, role, payload?.text);
+      io.to(room.id).emit('chat:message', { message });
+      ack?.({ ok: true, messageId: message.id });
+    } catch (error) {
+      ack?.({ ok: false, error: errorMessage(error) });
     }
   });
 
@@ -340,6 +369,7 @@ io.on('connection', (socket) => {
       title: '本局结束',
       text: `${game.playerDisplayName(me) || '玩家 ' + role} 在对方离线后结束了本局。故事止于此，但仍完整保存。`,
     };
+    game.clearRoomChat(room);
     game.saveRoomHistory(room);
     game.removeActiveRoom(room.id);
     io.to(room.id).emit('game:ended', endingPayload(room, room.ending.text));
@@ -412,6 +442,7 @@ function startOfflineTimeoutScan() {
         title: '本局结束（离线超时）',
         text: `玩家 ${game.playerDisplayName(room.players[offlineRole]) || '（离线者）'} 离线超过 30 分钟，本局自动存档结束。`,
       };
+      game.clearRoomChat(room);
       game.saveRoomHistory(room);
       game.removeActiveRoom(room.id);
       const socketId = room.players[onlineRole]?.sockId;

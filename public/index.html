@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css?v=20260801-23">
+  <link rel="stylesheet" href="css/style.css?v=20260801-24">
 </head>
 <body>
   <!-- 顶部导航 -->
@@ -219,14 +219,50 @@
     </section>
   </main>
 
+  <!-- 房间内双人实时聊天：独立于游戏回合渲染，避免消息到达时清空行动输入。 -->
+  <aside id="player-chat" class="player-chat" aria-label="双人实时聊天" hidden>
+    <section id="player-chat-window" class="player-chat-window" aria-hidden="true">
+      <div class="player-chat-inner">
+        <header class="player-chat-head">
+          <div class="player-chat-head-main">
+            <span id="player-chat-avatar" class="player-chat-avatar" aria-hidden="true">友</span>
+            <div>
+              <div id="player-chat-title" class="player-chat-title">玩家聊天</div>
+              <div id="player-chat-sub" class="player-chat-sub">仅双方可见</div>
+            </div>
+          </div>
+          <button id="player-chat-close" class="icon-btn player-chat-close" type="button" aria-label="收起聊天">
+            <i data-lucide="chevron-down"></i>
+          </button>
+        </header>
+        <div id="player-chat-messages" class="player-chat-messages" aria-live="polite"></div>
+        <form id="player-chat-form" class="player-chat-composer" autocomplete="off">
+          <input id="player-chat-input" maxlength="300" placeholder="和队友说点什么…" aria-label="聊天内容">
+          <button id="player-chat-send" class="player-chat-send" type="submit" aria-label="发送消息" disabled>
+            <i data-lucide="send"></i>
+          </button>
+        </form>
+      </div>
+    </section>
+    <button id="player-chat-toggle" class="player-chat-capsule" type="button" aria-expanded="false">
+      <span class="player-chat-capsule-icon" aria-hidden="true"><i data-lucide="message-circle"></i></span>
+      <span class="player-chat-capsule-copy">
+        <strong id="player-chat-capsule-title">玩家聊天</strong>
+        <span id="player-chat-capsule-preview">点击展开聊天</span>
+      </span>
+      <span id="player-chat-unread" class="player-chat-unread" hidden>0</span>
+      <span class="player-chat-capsule-arrow" aria-hidden="true"><i data-lucide="chevron-up"></i></span>
+    </button>
+  </aside>
+
   <!-- lucide 图标（本地化，不依赖 CDN） -->
   <script src="vendor/lucide.js"></script>
   <!-- socket.io 客户端（本地化） -->
   <script src="vendor/socket.io.min.js"></script>
   <!-- 应用脚本（非 ES module，file:// 可直接打开） -->
   <script src="js/worldbook-data.js"></script>
-  <script src="js/client.js?v=20260801-24"></script>
+  <script src="js/client.js?v=20260801-25"></script>
   <script src="js/ui.js?v=20260801-22"></script>
-  <script src="js/app.js?v=20260801-24"></script>
+  <script src="js/app.js?v=20260801-25"></script>
 </body>
 </html>
