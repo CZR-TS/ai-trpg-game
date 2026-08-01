@@ -3,7 +3,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import * as game from '../server/game.js';
 import { activateEntries, loadWorldbookFile } from '../server/lorebook.js';
-import { buildHistoryText, buildSystemPrompt, normalizeNarrativeText, normalizeNode } from '../server/llm.js';
+import { buildHistoryText, buildSystemPrompt, callAI, completedJsonFields, normalizeNarrativeText, normalizeNode } from '../server/llm.js';
 import { buildStoryMarkdown, storyExportFilename } from '../server/story-export.js';
 
 const config = {
@@ -106,6 +106,48 @@ const normalized = normalizeNode({
 }, { choicesA: ['后备A'], choicesB: ['后备B'], storyState: { flag: true } });
 assert.deepEqual(normalized.choices_A, ['有效']);
 assert.deepEqual(normalized.choices_B, ['（自由行动）']);
+
+const partialReply = '{"narrative":"第一段","choices_A":["前进"],"choices_B":["等待"],"story_state":{"A":{"hp":9}}}';
+assert.deepEqual(
+  completedJsonFields(partialReply, ['narrative', 'choices_A', 'choices_B', 'story_state']),
+  ['narrative', 'choices_A', 'choices_B', 'story_state'],
+  '流式 JSON 必须按实际闭合字段报告完成项'
+);
+
+const originalFetch = globalThis.fetch;
+let streamedRequestBody = null;
+const streamProgress = [];
+try {
+  globalThis.fetch = async (url, options) => {
+    streamedRequestBody = JSON.parse(options.body);
+    const events = [
+      { choices: [{ delta: { reasoning_content: '推演' }, finish_reason: null }] },
+      { choices: [{ delta: { content: '{"narrative":"故事",' }, finish_reason: null }] },
+      { choices: [{ delta: { content: '"choices_A":["前进"],"choices_B":["等待"],"story_state":{}}' }, finish_reason: 'stop' }] },
+      { choices: [], usage: { prompt_tokens: 120, completion_tokens: 40, total_tokens: 160, prompt_cache_hit_tokens: 80, prompt_cache_miss_tokens: 40 } },
+    ].map((item) => 'data: ' + JSON.stringify(item)).concat('data: [DONE]').join('\n\n') + '\n\n';
+    return new Response(events, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  };
+  const streamed = await callAI(
+    { ai: { baseURL: 'https://api.deepseek.com', apiKey: 'test-only', model: 'deepseek-v4-flash', temperature: 0.7, maxTokens: 1024, timeoutMs: 5000 } },
+    [{ role: 'user', content: '输出 JSON' }],
+    {
+      jsonMode: true,
+      sectionKeys: ['narrative', 'choices_A', 'choices_B', 'story_state'],
+      onProgress: (progress) => streamProgress.push(progress),
+    }
+  );
+  assert.equal(streamed, '{"narrative":"故事","choices_A":["前进"],"choices_B":["等待"],"story_state":{}}');
+  assert.equal(streamedRequestBody.stream, true, 'DeepSeek 请求必须启用 SSE 流式返回');
+  assert.deepEqual(streamedRequestBody.stream_options, { include_usage: true }, '流式请求必须要求最终 usage');
+  assert.deepEqual(streamedRequestBody.response_format, { type: 'json_object' }, '游戏生成必须启用 JSON 输出模式');
+  assert.ok(streamProgress.some((item) => item.phase === 'thinking' && item.reasoningChars > 0), '必须真实报告模型推演状态');
+  assert.ok(streamProgress.some((item) => item.phase === 'receiving' && item.contentChars > 0), '必须真实报告已接收字符数');
+  assert.ok(streamProgress.some((item) => item.completedFields?.length === 4), '必须真实报告完整结构项数量');
+  assert.equal(streamProgress.findLast((item) => item.usage)?.usage.prompt_cache_hit_tokens, 80, '必须读取 DeepSeek 缓存命中 Token');
+} finally {
+  globalThis.fetch = originalFetch;
+}
 assert.deepEqual(normalized.story_state, { flag: true });
 assert.match(buildHistoryText([{ round: 1, narrative: 'n', choiceA: 'a', choiceB: 'b', storyState: { hp: 9 } }], 6), /"hp":9/);
 assert.equal(
@@ -122,6 +164,11 @@ assert.equal(
 );
 assert.match(buildSystemPrompt(character), /仅用 \*\*重点文字\*\*/, 'AI 提示词必须要求少量 Markdown 粗体');
 assert.match(buildSystemPrompt(character), /转义换行符 \\n\\n 分段/, 'AI 提示词必须要求自然分段');
+const concisePrompt = buildSystemPrompt(character);
+assert.match(concisePrompt, /全局文风·中度简洁/, 'AI 提示词必须固定使用中度简洁文风');
+assert.match(concisePrompt, /动作与事实优先/, '中度简洁文风必须要求优先描写动作与结果');
+assert.match(concisePrompt, /禁止连续堆叠同义或近义形容词/, '中度简洁文风必须禁止形容词堆叠');
+assert.match(concisePrompt, /summary 必须直接写清双方行动、成败、代价、新信息和局面变化/, '回合反馈必须直接陈述有效信息');
 const exportedStory = buildStoryMarkdown({
   code: 'SAFE2222',
   worldbookId: 'fantasy-example',
@@ -200,7 +247,9 @@ assert.equal(loaded.token_budget, 2000);
 const pageHtml = await readFile(path.resolve('public/index.html'), 'utf8');
 const pageCss = await readFile(path.resolve('public/css/style.css'), 'utf8');
 const pageUi = await readFile(path.resolve('public/js/ui.js'), 'utf8');
+const pageClient = await readFile(path.resolve('public/js/client.js'), 'utf8');
 const pageApp = await readFile(path.resolve('public/js/app.js'), 'utf8');
+const deployUpdate = await readFile(path.resolve('deploy/update.sh'), 'utf8');
 assert.match(pageHtml, /id="theme-toggle"[^>]+data-action="theme-toggle"/, '顶部必须提供主题切换按钮');
 assert.match(pageHtml, /<button class="brand"[\s\S]*?<span>共叙<\/span>/, '顶部品牌必须包含“共叙”文字');
 assert.doesNotMatch(pageCss, /\.brand\s+span\s*\{[^}]*display\s*:\s*none/, '移动端不能再隐藏品牌文字');
@@ -208,7 +257,7 @@ assert.match(pageCss, /:root\[data-theme='dark'\]/, '样式表必须包含暗色
 assert.match(pageCss, /\.topbar-actions\s*\{/, '顶部操作区必须为品牌和主题按钮预留布局');
 assert.match(pageApp, /localStorage\.setItem\(THEME_KEY, next\)/, '主题选择必须写入本地存储');
 assert.match(pageApp, /dark \? 'sun' : 'moon'/, '主题按钮必须使用 Lucide 的太阳/月亮图标');
-assert.match(pageHtml, /style\.css\?v=20260801-17/, 'DM 生成进度更新后必须刷新静态资源版本');
+assert.match(pageHtml, /style\.css\?v=20260801-22/, '反馈正文间距更新后必须刷新静态资源版本');
 assert.match(pageHtml, /入场昵称尽量独特[\s\S]*重连时仍用此昵称[\s\S]*剧情昵称不同/, '玩家入口必须用两行短句解释身份昵称');
 assert.match(pageCss, /\.offline-banner\[hidden\]\s*\{\s*display:\s*none/, '未离线时不得显示空的警告横幅');
 assert.match(pageApp, /async \(event\)[\s\S]*client\.saveProfile/, '开场页必须提供角色资料保存交互');
@@ -228,11 +277,29 @@ assert.match(pageApp, /downloadStory\(room, false\)/, '当前房间必须提供�
 assert.match(pageApp, /downloadStory\(record, true\)/, '历史记录必须提供故事导出按钮');
 assert.match(pageApp, /URL\.createObjectURL\(result\.blob\)/, '前端必须通过 Blob 下载 Markdown 文件');
 assert.match(pageApp, /GENERATION_PHASES/, '前端必须统一定义 DM 生成阶段');
-assert.match(pageApp, /模型响应较慢，但仍在继续等待/, '长时间生成必须提供明确等待反馈');
-assert.match(pageApp, /Math\.min\(93,/, '估算进度必须停在完成前，不能伪装真实完成');
+assert.match(pageApp, /game:generation_progress/, '前端必须订阅真实生成进度事件');
+assert.match(pageApp, /正在接收剧情内容/, '前端必须展示真实流式接收状态');
+assert.match(pageApp, /completed \/ total \* 100/, '加载状态条必须只按真实完成字段计算长度');
+assert.doesNotMatch(pageApp, /估算进度|Math\.min\(93,/, '前端不得保留时间估算百分比');
+assert.match(pageApp, /UI\.icon\('coins'\)[\s\S]*UI\.icon\('database'\)[\s\S]*UI\.icon\('layers-3'\)/, 'Token 栏必须用图标紧凑展示总量、缓存和上下文');
+assert.match(pageApp, /function tokenUsageNode[\s\S]*?\r?\n  \}\r?\n\r?\n  function legacyCopy/, 'Token 统计组件必须位于可被各玩家视图调用的作用域');
+assert.match(pageApp, /if \(res\.room\) state\.room = res\.room/, '加入成功后必须立即采用响应中的房间状态');
+assert.match(pageClient, /game:generation_progress/, 'Socket 客户端必须转发真实生成事件');
 assert.match(pageApp, /generationLoader\('summary'\)/, '回合结算必须显示生成进度');
-assert.match(pageCss, /\.dm-generation-orbit\s*\{/, 'DM 生成组件必须提供明确加载动画');
+assert.match(pageCss, /\.dm-generation-glow\s*\{[\s\S]*dm-soft-glow/, 'DM 生成组件必须使用柔和且不旋转的动效');
 assert.match(pageCss, /prefers-reduced-motion:\s*reduce/, '加载动画必须尊重减少动态效果设置');
+assert.match(pageApp, /refreshGenerationCards\(progress\.kind\)/, '流式更新必须原位刷新加载卡，不能反复重建动画');
+assert.match(pageApp, /data-generation-current[\s\S]*data-generation-progress/, '生成状态条必须只突出当前项目和真实完成进度');
+assert.match(pageApp, /GENERATION_HINTS[\s\S]*检查下一幕与前文是否连贯/, '生成卡必须提供丰富且与当前任务相关的提示');
+assert.match(pageApp, /下一回合已就绪[\s\S]*正在为双方切换到新场景/, '预加载完成后必须显示进入状态，不能继续声称正在续写');
+assert.match(pageCss, /\.dm-generation\.is-compact\s*\{[\s\S]*grid-template-columns:\s*22px/, '后台预加载状态条必须进一步缩小');
+assert.match(pageCss, /\.dm-generation-track\s*\{/, '加载状态条必须用细进度线展示真实字段完成情况');
+assert.doesNotMatch(pageApp, /data-generation-sections/, '加载状态条不得再平铺三至五个固定字段标签');
+assert.match(pageCss, /\.token-usage\s*\{/, '玩家页面必须提供低干扰 Token 统计样式');
+assert.match(pageCss, /\.info-page > \.dm-generation\s*\{\s*margin-top:\s*10px/, '反馈正文与后台预加载状态条之间必须保留小段间距');
+assert.match(deployUpdate, /SOURCE_ARCHIVE=\$\{1:-\/tmp\/ai-trpg-game\.tar\.gz\}/, '服务器更新脚本必须读取本地上传的发布包');
+assert.match(deployUpdate, /cp -- "\$SOURCE_ARCHIVE"/, '服务器更新脚本必须复制本地发布包后再解压');
+assert.doesNotMatch(deployUpdate, /github\.com|ARCHIVE_URL/, '服务器更新脚本不得访问 GitHub');
 console.log('后端单元测试通过');
 
 for (const testRoom of [room, preloadRoom, introRoom, brokenRoom]) game.removeActiveRoom(testRoom.id);

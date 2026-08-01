@@ -53,7 +53,7 @@ class GameClient {
   // ---- Socket（玩家）----
   on(e, cb) {}
   off(e, cb) {}
-  async join(payload) {}                 // emit room:join {roomCode,name} → ack {ok,roomId,role} | {ok:false,error}
+  async join(payload) {}                 // emit room:join {roomCode,name} → ack {ok,roomId,role,room} | {ok:false,error}
   async setReady() {}                    // emit room:ready
   async startGame() {}                   // emit game:start
   async submitChoice(choiceId) {}        // emit game:choice {choiceId}
@@ -617,7 +617,7 @@ class SocketClient extends GameClient {
     const events = [
       'room:state', 'player:joined', 'player:reconnected', 'player:disconnected',
       'player:ready', 'game:started', 'game:starting', 'game:intro', 'game:profile_update', 'game:round', 'game:choice_update',
-      'game:summary', 'game:next_update', 'game:preload_status', 'game:judging', 'game:ended',
+      'game:summary', 'game:next_update', 'game:preload_status', 'game:generation_progress', 'game:judging', 'game:ended',
     ];
     events.forEach((event) => this.socket.on(event, (payload) => this.bus.emit(event, payload)));
     this.socket.on('disconnect', () => {
@@ -629,6 +629,7 @@ class SocketClient extends GameClient {
       this.needsReconnect = false;
       this.socket.emit('room:join', this.lastJoin, (ack) => {
         if (!ack?.ok) this.bus.emit('connection:error', ack || { error: '自动重连失败' });
+        else if (ack.room) this.bus.emit('room:state', { room: ack.room });
       });
     });
   }

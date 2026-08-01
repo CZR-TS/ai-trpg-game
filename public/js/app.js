@@ -131,6 +131,32 @@
     return (value / 1024 / 1024).toFixed(2) + ' MB';
   }
 
+  function formatTokens(value) {
+    const amount = Math.max(0, Number(value) || 0);
+    if (amount < 1000) return String(Math.round(amount));
+    if (amount < 1000000) return (amount / 1000).toFixed(amount < 10000 ? 1 : 0) + 'K';
+    return (amount / 1000000).toFixed(amount < 10000000 ? 1 : 0) + 'M';
+  }
+
+  function tokenUsageNode(usage, extraClass = '') {
+    const current = usage || {};
+    const total = formatTokens(current.totalTokens);
+    const cached = formatTokens(current.cacheHitTokens);
+    const context = formatTokens(current.lastContextTokens);
+    const label = `本局总 Token ${total}，缓存命中 ${cached}，当前上下文 ${context}`;
+    return UI.el('div', {
+      class: 'token-usage' + (extraClass ? ' ' + extraClass : ''),
+      title: label,
+      'aria-label': label,
+    }, [
+      UI.el('span', { class: 'token-usage-item' }, [UI.icon('coins'), UI.el('span', { text: total })]),
+      UI.el('span', { class: 'token-usage-paren', text: '（' }),
+      UI.el('span', { class: 'token-usage-item' }, [UI.icon('database'), UI.el('span', { text: cached })]),
+      UI.el('span', { class: 'token-usage-paren', text: '）' }),
+      UI.el('span', { class: 'token-usage-item token-usage-context' }, [UI.icon('layers-3'), UI.el('span', { text: context })]),
+    ]);
+  }
+
   function legacyCopy(text) {
     try {
       const ta = document.createElement('textarea');
@@ -165,6 +191,7 @@
   // ============ 事件订阅（对齐 Socket.IO 服务端→客户端事件名）============
   client.on('room:state', ({ room }) => {
     state.room = room;
+    if (room?.generationProgress) beginGeneration(room.generationProgress.kind, room.generationProgress);
     syncOpponentOffline();
     render();
   });
@@ -176,6 +203,13 @@
     state.game.starting = true;
     beginGeneration('opening');
     render();
+  });
+  client.on('game:generation_progress', (progress) => {
+    if (!progress?.kind) return;
+    beginGeneration(progress.kind, progress);
+    if (state.room && progress.tokenUsage) state.room.tokenUsage = progress.tokenUsage;
+    const updated = refreshGenerationCards(progress.kind);
+    if (!updated && (state.view === 'lobby' || state.view === 'game' || state.view === 'ending')) render();
   });
   client.on('game:intro', ({ intro, round, confirmed }) => {
     finishGeneration('opening');
@@ -630,6 +664,7 @@
   // 以玩家身份进入房间（演示用；组织者旁观，不参与玩家选择，仅作演示）
   async function demoJoin(roomCode) {
     const res = await client.join({ roomCode, name: '组织者预览' });
+      if (res.room) state.room = res.room;
     if (res.ok) {
       state.me = { role: res.role, name: '组织者预览' };
       resetTurn();
@@ -688,6 +723,7 @@
     err.hidden = true;
     const res = await client.join({ roomCode, name });
     if (res.ok) {
+      if (res.room) state.room = res.room;
       state.me = { role: res.role, name };
       saveSession(roomCode, name);
       resetTurn();
@@ -716,6 +752,11 @@
     UI.clear(seats);
     seats.appendChild(renderSeat('A', room.players && room.players.A, state.me && state.me.role === 'A'));
     seats.appendChild(renderSeat('B', room.players && room.players.B, state.me && state.me.role === 'B'));
+    const lobbyUsage = $('lobby-token-usage');
+    UI.clear(lobbyUsage);
+    lobbyUsage.appendChild(tokenUsageNode(room.tokenUsage));
+    lobbyUsage.hidden = false;
+
 
     const acts = $('lobby-actions');
     UI.clear(acts);
@@ -806,113 +847,184 @@
   let narrativeTyping = { active: false, text: '' };
   let typedDone = { narrative: null, summary: null };
 
-  const generationStarts = Object.create(null);
+  const generationStates = Object.create(null);
   const GENERATION_PHASES = {
-    opening: {
-      title: 'DM 正在准备开场',
-      stages: [
-        [0, 8, '读取世界书与角色卡'],
-        [3, 24, '整理两位玩家的背景资料'],
-        [7, 46, '构思开场冲突与故事线索'],
-        [13, 68, '编排世界背景与初始选择'],
-        [22, 84, '等待模型完成开场长文本'],
-      ],
-    },
-    round: {
-      title: 'DM 正在续写下一回合',
-      stages: [
-        [0, 10, '读取上一回合结果'],
-        [3, 28, '整理角色状态与共同线索'],
-        [7, 50, '推演选择带来的后续变化'],
-        [13, 70, '编排新场景与行动选项'],
-        [22, 85, '等待模型完成回合内容'],
-      ],
-    },
-    summary: {
-      title: 'DM 正在结算本回合',
-      stages: [
-        [0, 10, '汇总双方提交的行动'],
-        [3, 30, '判定行动结果与相互影响'],
-        [7, 52, '更新角色状态与故事进度'],
-        [13, 72, '编写本回合反馈'],
-        [22, 86, '检查是否触发故事结局'],
-      ],
-    },
-    preload: {
-      title: 'DM 正在后台准备下一回合',
-      stages: [
-        [0, 12, '读取刚刚发生的故事'],
-        [3, 32, '整理仍未解决的线索'],
-        [7, 54, '推演下一幕的发展方向'],
-        [13, 74, '生成新叙事与行动选项'],
-        [22, 87, '等待模型完成预生成内容'],
-      ],
-    },
-    ending: {
-      title: 'DM 正在判定故事结局',
-      stages: [
-        [0, 12, '回顾整局故事与关键选择'],
-        [4, 34, '汇总角色关系与最终状态'],
-        [9, 58, '判定结局走向'],
-        [15, 76, '撰写最后的故事篇章'],
-        [24, 88, '等待模型完成结局'],
-      ],
-    },
+    opening: { title: 'DM 正在准备开场' },
+    round: { title: 'DM 正在续写下一回合' },
+    summary: { title: 'DM 正在结算本回合' },
+    preload: { title: 'DM 正在后台准备下一回合' },
+    ending: { title: 'DM 正在判定故事结局' },
   };
 
-  function beginGeneration(kind) {
-    if (!generationStarts[kind]) generationStarts[kind] = Date.now();
+  const GENERATION_SECTIONS = {
+    opening: [['intro', '背景'], ['narrative', '开场'], ['choices_A', 'A 行动'], ['choices_B', 'B 行动'], ['story_state', '状态']],
+    round: [['narrative', '叙事'], ['choices_A', 'A 行动'], ['choices_B', 'B 行动'], ['story_state', '状态']],
+    preload: [['narrative', '叙事'], ['choices_A', 'A 行动'], ['choices_B', 'B 行动'], ['story_state', '状态']],
+    summary: [['summary', '反馈'], ['story_state', '状态'], ['ending', '结局']],
+    ending: [['summary', '反馈'], ['story_state', '状态'], ['ending', '结局']],
+  };
+
+  const GENERATION_HINTS = {
+    opening: [
+      '整理世界背景与人物资料',
+      '寻找适合两位玩家的故事切口',
+      '编排双方初次登场的行动机会',
+      '检查开场线索与角色设定是否吻合',
+    ],
+    round: [
+      '衔接双方行动造成的后果',
+      '梳理仍在发酵的线索与关系',
+      '为两位玩家编排新的行动机会',
+      '同步人物状态与故事进度',
+      '检查下一幕与前文是否连贯',
+    ],
+    preload: [
+      '整理本回合留下的变化',
+      '沿着双方选择推演下一幕',
+      '提前准备两位玩家的行动机会',
+      '同步人物状态与未解线索',
+      '检查下一回合能否顺畅接续',
+    ],
+    summary: [
+      '核对双方刚刚作出的选择',
+      '整理行动带来的即时影响',
+      '更新人物状态与共同局势',
+      '判断故事是否触发新的转折',
+    ],
+    ending: [
+      '回看一路积累的关键选择',
+      '核对仍未解决的故事线索',
+      '判断角色最终抵达的结局',
+    ],
+  };
+
+  const GENERATION_STATUS = {
+    queued: ['准备中', '正在整理本次生成资料'],
+    requesting: ['连接中', '正在连接 DeepSeek'],
+    connected: ['已连接', '已连接 DeepSeek，等待模型响应'],
+    thinking: ['推演中', '模型正在推演故事'],
+    receiving: ['接收中', '正在接收剧情内容'],
+    received: ['已接收', '剧情内容接收完成'],
+    validating: ['校验中', '正在校验剧情结构'],
+    retrying: ['重试中', '返回格式异常，正在重新生成'],
+    failed: ['异常', '模型请求异常，正在准备备用内容'],
+    fallback: ['备用内容', '正在生成安全备用剧情'],
+    completed: ['已完成', '剧情结构校验完成'],
+  };
+
+  function beginGeneration(kind, detail = {}) {
+    const previous = generationStates[kind] || {
+      kind, phase: 'queued', startedAt: Date.now(), contentChars: 0,
+      reasoningChars: 0, completedFields: [], totalSections: 0, attempt: 1,
+    };
+    generationStates[kind] = { ...previous, ...detail, kind };
+    if (!generationStates[kind].startedAt) generationStates[kind].startedAt = Date.now();
   }
 
   function finishGeneration(kind) {
-    delete generationStarts[kind];
+    delete generationStates[kind];
   }
 
   function clearGenerations() {
-    Object.keys(generationStarts).forEach((kind) => delete generationStarts[kind]);
+    Object.keys(generationStates).forEach((kind) => delete generationStates[kind]);
+  }
+
+  function generationStageText(kind, data, elapsedMs) {
+    const status = GENERATION_STATUS[data.phase] || GENERATION_STATUS.queued;
+    const hints = GENERATION_HINTS[kind] || GENERATION_HINTS.round;
+    const hint = hints[Math.floor(Math.max(0, elapsedMs) / 3600) % hints.length];
+    if (data.phase === 'receiving') {
+      const chars = Math.max(0, Number(data.contentChars) || 0);
+      return chars ? `已收到 ${chars} 字 · ${hint}` : `正在接收剧情内容 · ${hint}`;
+    }
+    if (data.phase === 'validating') return `${status[1]} · 核对已返回的每一项内容`;
+    if (data.phase === 'retrying') return `${status[1]} · 保留前文并重新组织返回格式`;
+    if (data.phase === 'failed' || data.phase === 'fallback') return status[1];
+    return `${status[1]} · ${hint}`;
+  }
+
+  function updateGenerationCard(card, kind) {
+    const data = generationStates[kind];
+    if (!data || !card) return;
+    const status = GENERATION_STATUS[data.phase] || GENERATION_STATUS.queued;
+    const elapsedMs = Math.max(0, Date.now() - (Number(data.startedAt) || Date.now()));
+    const completedFields = Array.isArray(data.completedFields) ? data.completedFields : [];
+    const completedSet = new Set(completedFields);
+    const sectionConfig = GENERATION_SECTIONS[kind] || GENERATION_SECTIONS.round;
+    const total = Math.max(sectionConfig.length, Number(data.totalSections) || 0);
+    const completed = Math.min(total, completedFields.length);
+    const whole = Math.floor(elapsedMs / 1000);
+    const live = card.querySelector('[data-generation-live]');
+    const stage = card.querySelector('[data-generation-stage]');
+    const chars = card.querySelector('[data-generation-chars]');
+    const count = card.querySelector('[data-generation-count]');
+    const attempt = card.querySelector('[data-generation-attempt]');
+    const elapsed = card.querySelector('[data-generation-elapsed]');
+    const currentStep = card.querySelector('[data-generation-current]');
+    const progressFill = card.querySelector('[data-generation-progress]');
+    if (live) live.textContent = status[0];
+    if (stage) stage.textContent = generationStageText(kind, data, elapsedMs);
+    if (chars) chars.textContent = String(Math.max(0, Number(data.contentChars) || 0)) + ' 字';
+    if (count) count.textContent = completed + '/' + total;
+    if (attempt) {
+      attempt.hidden = Number(data.attempt) <= 1;
+      attempt.querySelector('span').textContent = '第 ' + (Number(data.attempt) || 1) + ' 次';
+    }
+    if (elapsed) elapsed.textContent = whole < 60 ? `已等待 ${whole} 秒` : `已等待 ${Math.floor(whole / 60)} 分 ${whole % 60} 秒`;
+    if (currentStep) {
+      const nextSection = sectionConfig.find(([key], index) => !completedSet.has(key) && index >= completed);
+      currentStep.textContent = completed >= total ? '内容已齐' : '当前：' + (nextSection?.[1] || sectionConfig[Math.min(completed, sectionConfig.length - 1)]?.[1] || '生成中');
+    }
+    if (progressFill) progressFill.style.width = total ? Math.min(100, completed / total * 100) + '%' : '0%';
+  }
+
+  function refreshGenerationCards(kind) {
+    const cards = document.querySelectorAll('.dm-generation[data-generation-kind="' + kind + '"]');
+    cards.forEach((card) => updateGenerationCard(card, kind));
+    return cards.length;
   }
 
   function generationLoader(kind, { compact = false, title } = {}) {
     const config = GENERATION_PHASES[kind] || GENERATION_PHASES.round;
     beginGeneration(kind);
-    const fill = UI.el('div', { class: 'dm-generation-fill' });
-    const percent = UI.el('b', { text: '约 8%' });
-    const stage = UI.el('span', { class: 'dm-generation-stage', text: config.stages[0][2] });
-    const elapsed = UI.el('span', { text: '已等待 0 秒' });
-    const card = UI.el('div', { class: 'dm-generation' + (compact ? ' is-compact' : ''), role: 'status', 'aria-live': 'polite' }, [
-      UI.el('div', { class: 'dm-generation-orbit', 'aria-hidden': 'true' }, [
-        UI.el('span', { class: 'dm-orbit-ring ring-a' }),
-        UI.el('span', { class: 'dm-orbit-ring ring-b' }),
-        UI.el('span', { class: 'dm-orbit-core' }, [UI.icon('dices')]),
+    const facts = [
+      UI.el('span', { title: '实际接收的剧情字符数' }, [UI.icon('file-text'), UI.el('span', { 'data-generation-chars': '', text: '0 字' })]),
+      UI.el('span', { title: '已经完整接收的剧情结构项' }, [UI.icon('list-checks'), UI.el('span', { 'data-generation-count': '', text: '0/0' })]),
+      UI.el('span', { title: 'AI 请求次数', 'data-generation-attempt': '', hidden: true }, [UI.icon('rotate-cw'), UI.el('span', { text: '第 1 次' })]),
+    ];
+    const card = UI.el('div', {
+      class: 'dm-generation' + (compact ? ' is-compact' : ''),
+      role: 'status',
+      'aria-live': 'polite',
+      'data-generation-kind': kind,
+    }, [
+      UI.el('div', { class: 'dm-generation-mark', 'aria-hidden': 'true' }, [
+        UI.el('span', { class: 'dm-generation-glow' }),
+        UI.el('span', { class: 'dm-generation-glyph' }, [UI.icon('sparkles')]),
       ]),
       UI.el('div', { class: 'dm-generation-copy' }, [
-        UI.el('div', { class: 'dm-generation-head' }, [UI.el('strong', { text: title || config.title }), percent]),
-        stage,
-        UI.el('div', { class: 'dm-generation-track' }, [fill]),
-        UI.el('div', { class: 'dm-generation-meta' }, [UI.el('span', { text: '估算进度' }), elapsed]),
+        UI.el('div', { class: 'dm-generation-head' }, [
+          UI.el('strong', { text: title || config.title }),
+          UI.el('span', { class: 'dm-generation-live', 'data-generation-live': '', text: '准备中' }),
+        ]),
+        UI.el('span', { class: 'dm-generation-stage', 'data-generation-stage': '', text: '正在整理本次生成资料' }),
+        UI.el('div', { class: 'dm-generation-bottom' }, [
+          UI.el('div', { class: 'dm-generation-facts' }, facts),
+          UI.el('span', { class: 'dm-generation-current', 'data-generation-current': '', text: '当前：生成中' }),
+          UI.el('span', { 'data-generation-elapsed': '', text: '已等待 0 秒' }),
+        ]),
+        UI.el('div', { class: 'dm-generation-track', 'aria-hidden': 'true' }, [
+          UI.el('span', { 'data-generation-progress': '' }),
+        ]),
       ]),
     ]);
     let wasConnected = false;
     const update = () => {
       if (card.isConnected) wasConnected = true;
       else if (wasConnected) return clearInterval(timer);
-      const startedAt = generationStarts[kind] || Date.now();
-      const seconds = Math.max(0, (Date.now() - startedAt) / 1000);
-      const stages = config.stages;
-      let index = stages.findLastIndex((item) => seconds >= item[0]);
-      if (index < 0) index = 0;
-      const current = stages[index];
-      const next = stages[index + 1];
-      const ratio = next ? Math.min(1, (seconds - current[0]) / (next[0] - current[0])) : Math.min(1, (seconds - current[0]) / 35);
-      const target = next ? next[1] : 93;
-      const value = Math.min(93, current[1] + (target - current[1]) * ratio);
-      fill.style.width = value.toFixed(1) + '%';
-      percent.textContent = '约 ' + Math.round(value) + '%';
-      stage.textContent = seconds >= 50 ? '模型响应较慢，但仍在继续等待' : current[2];
-      const whole = Math.floor(seconds);
-      elapsed.textContent = whole < 60 ? `已等待 ${whole} 秒` : `已等待 ${Math.floor(whole / 60)} 分 ${whole % 60} 秒`;
+      updateGenerationCard(card, kind);
     };
-    const timer = setInterval(update, 500);
+    const timer = setInterval(update, 600);
     update();
     return card;
   }
@@ -951,6 +1063,7 @@
       ]));
     }
     top.appendChild(UI.el('div', { class: 'top-progress' }, [UI.progressBar(room.progress)]));
+    top.appendChild(tokenUsageNode(room.tokenUsage, 'token-usage-top'));
   }
 
   function renderWaiting() {
@@ -1111,13 +1224,29 @@
           na.appendChild(UI.el('div', { class: 'round-preload-status ready' }, [
             UI.icon('check-circle-2'), UI.el('span', { text: '下一回合已预加载' }),
           ]));
-        } else {
+        } else if (summary.preloadStatus === 'loading') {
           na.appendChild(generationLoader('preload', { compact: true }));
+        } else if (summary.preloadStatus === 'failed') {
+          finishGeneration('preload');
+          na.appendChild(UI.el('div', { class: 'round-preload-status retry' }, [
+            UI.icon('refresh-cw'), UI.el('span', { text: '预加载未完成，双方确认后会自动重试' }),
+          ]));
         }
       }
       renderStatusPanel(summary.storyState, state.me.role);
     }
     renderNextButton('下一步', 'arrow-right');
+  }
+
+  function nextRoundTransition() {
+    return UI.el('div', { class: 'next-round-transition', role: 'status', 'aria-live': 'polite' }, [
+      UI.el('span', { class: 'next-round-transition-icon' }, [UI.icon('circle-check-big')]),
+      UI.el('span', { class: 'next-round-transition-copy' }, [
+        UI.el('strong', { text: '下一回合已就绪' }),
+        UI.el('small', { text: '正在为双方切换到新场景…' }),
+      ]),
+      UI.icon('arrow-right', 'next-round-transition-arrow'),
+    ]);
   }
 
   // 双方确认按钮（intro / summary 共用）
@@ -1128,8 +1257,13 @@
     const meConfirmed = g.next.me;
     const oppConfirmed = g.next.opp;
     if (meConfirmed && oppConfirmed) {
-      beginGeneration('round');
-      bar.appendChild(generationLoader('round', { compact: true }));
+      if (g.phase === 'summary' && g.summary?.preloadStatus === 'ready') {
+        finishGeneration('round');
+        bar.appendChild(nextRoundTransition());
+      } else {
+        beginGeneration('round');
+        bar.appendChild(generationLoader('round', { compact: true }));
+      }
       return;
     }
     const btnText = options.disabled
@@ -1471,6 +1605,7 @@
     const endingText = UI.el('div', { class: 'ending-text rich-text' });
     UI.renderRichText(endingText, ending.text);
     box.appendChild(endingText);
+    box.appendChild(tokenUsageNode(state.room?.tokenUsage, 'token-usage-ending'));
 
     // 本局回顾（封缄回合事后揭秘）
     const recap = UI.el('div', { class: 'recap' });
@@ -1524,6 +1659,7 @@
       $('inp-name').value = sess.name;
       const res = await client.join({ roomCode: sess.roomCode, name: sess.name });
       if (res && res.ok) {
+        if (res.room) state.room = res.room;
         state.me = { role: res.role, name: sess.name };
         resetTurn();
         if (state.playerView === 'player-entry') state.playerView = 'lobby';

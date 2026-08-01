@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT=/opt/ai-trpg-game
-ARCHIVE_URL=https://github.com/CZR-TS/ai-trpg-game/archive/refs/heads/main.tar.gz
+SOURCE_ARCHIVE=${1:-/tmp/ai-trpg-game.tar.gz}
 RELEASE_ID=$(date -u +%Y%m%d%H%M%S)
 RELEASE_DIR="$ROOT/releases/$RELEASE_ID"
 TEMP_DIR=$(mktemp -d "$ROOT/.update.XXXXXX")
@@ -12,8 +12,9 @@ cleanup() { rm -rf -- "$TEMP_DIR"; }
 trap cleanup EXIT
 
 test -f "$ROOT/shared/config/config.json" || { echo "缺少共享配置文件" >&2; exit 1; }
+test -f "$SOURCE_ARCHIVE" || { echo "缺少本地发布包：$SOURCE_ARCHIVE" >&2; exit 1; }
 mkdir -p "$RELEASE_DIR" "$ROOT/shared/data"
-curl -fsSL "$ARCHIVE_URL" -o "$TEMP_DIR/source.tar.gz"
+cp -- "$SOURCE_ARCHIVE" "$TEMP_DIR/source.tar.gz"
 tar -xzf "$TEMP_DIR/source.tar.gz" --strip-components=1 -C "$RELEASE_DIR"
 ln -sfn "$ROOT/shared/config/config.json" "$RELEASE_DIR/config/config.json"
 ln -sfn "$ROOT/shared/data" "$RELEASE_DIR/data"
@@ -29,6 +30,7 @@ systemctl restart ai-trpg-game
 
 for _ in $(seq 1 20); do
   if curl -fsS http://127.0.0.1:38571/ >/dev/null; then
+    install -m 0755 "$RELEASE_DIR/deploy/update.sh" /usr/local/sbin/update-ai-trpg-game
     echo "更新成功：$RELEASE_DIR"
     exit 0
   fi

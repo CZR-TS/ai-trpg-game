@@ -93,9 +93,12 @@ const main = async () => {
   console.log('== 2. 双人身份、重连与阶段状态机 ==');
   const playerA = await connectClient();
   let playerB = await connectClient();
+  const generationEvents = [];
+  playerA.on('game:generation_progress', (progress) => generationEvents.push(progress));
   const joinA = await emitAck(playerA, 'room:join', { roomCode: room.code, name: '阿甲' });
   const openingReadyPromise = waitForWhere(playerA, 'room:state', ({ room: state }) => state.openingStatus === 'ready');
   const joinB = await emitAck(playerB, 'room:join', { roomCode: room.code, name: '阿乙' });
+  check('加入响应直接携带房间状态', joinA.room?.code === room.code && joinA.room?.players?.A?.name === '阿甲');
   const openingReady = await openingReadyPromise;
   check('玩家 A/B 通过房间码和昵称加入', joinA.role === 'A' && joinB.role === 'B');
   const duplicateNameClient = await connectClient();
@@ -103,6 +106,8 @@ const main = async () => {
   check('在线昵称不能被其他连接顶号', duplicateName.ok === false);
   duplicateNameClient.close();
   check('两名玩家到齐后自动预加载开场', openingReady.room.openingStatus === 'ready');
+  check('玩家可收到服务端真实生成状态',
+    generationEvents.some((item) => item.kind === 'opening' && item.totalSections === 5));
   const secondJoin = await emitAck(playerA, 'room:join', { roomCode: room.code, name: '重复' });
   check('同一连接不能重复加入', secondJoin.ok === false);
   const leftPromise = waitFor(playerA, 'player:left');

@@ -86,10 +86,15 @@ function emitRoomState(room) {
   emitPlayerEvent(room, 'room:state', (role) => ({ room: playerRoomView(room, role) }));
 }
 
+function generationEmitter(room) {
+  return (progress) => io.to(room.id).emit('game:generation_progress', progress);
+}
+
+
 function maybePreloadOpening(room) {
   if (room.status !== 'waiting' || !room.players.A || !room.players.B) return;
   if (room.openingStatus !== 'idle' && room.openingStatus !== 'failed') return;
-  const pending = game.preloadOpening(room, config, characterFor(room));
+  const pending = game.preloadOpening(room, config, characterFor(room), generationEmitter(room));
   emitRoomState(room);
   pending.then(() => {
     emitRoomState(room);
@@ -121,6 +126,7 @@ io.on('connection', (socket) => {
         roomId: room.id,
         role,
         reconnected: joined.reconnected,
+        room: playerRoomView(room, role),
       });
       io.to(room.id).emit(joined.reconnected ? 'player:reconnected' : 'player:joined', {
         role,
@@ -186,7 +192,7 @@ io.on('connection', (socket) => {
     try {
       // 立即通知双方“开场生成中”，避免房主点开始后对方界面毫无反馈
       io.to(room.id).emit('game:starting', { code: room.code });
-      const node = await game.startRoom(room, config, characterFor(room));
+      const node = await game.startRoom(room, config, characterFor(room), generationEmitter(room));
       if (!node) return ack?.({ ok: false, error: '游戏正在处理或已经开始' });
       ack?.({ ok: true });
       io.to(room.id).emit('game:started', { code: room.code });
@@ -227,7 +233,7 @@ io.on('connection', (socket) => {
     if (!room || room.status !== 'playing') return ack?.({ ok: false, error: '游戏未进行中' });
     if (room.phase !== 'round') return ack?.({ ok: false, error: '当前阶段不能推进' });
     try {
-      const result = await game.advanceRoom(room, config, characterFor(room));
+      const result = await game.advanceRoom(room, config, characterFor(room), generationEmitter(room));
       if (!result) {
         return ack?.({ ok: false, error: room.processing ? 'DM 正在推进剧情' : '双方都提交选择后才能推进' });
       }
@@ -236,7 +242,7 @@ io.on('connection', (socket) => {
         io.to(room.id).emit('game:ended', endingPayload(room, result.summary));
       } else {
         emitPlayerEvent(room, 'game:summary', (role) => summaryView(room, role));
-        game.preloadNextRound(room, config, characterFor(room)).then((node) => {
+        game.preloadNextRound(room, config, characterFor(room), generationEmitter(room)).then((node) => {
           if (node && room.status === 'playing' && room.phase === 'summary') {
             emitPlayerEvent(room, 'game:preload_status', () => ({ status: room.nextRoundStatus }));
           }
@@ -278,7 +284,7 @@ io.on('connection', (socket) => {
     io.to(room.id).emit('game:next_update', { role, confirmed: true });
     if (!bothReady) return ack?.({ ok: true, waiting: true });
     try {
-      const result = await game.proceedNext(room, config, characterFor(room));
+      const result = await game.proceedNext(room, config, characterFor(room), generationEmitter(room));
       if (!result) return ack?.({ ok: false, error: '推进失败，请重试' });
       if (result.type === 'round') {
         emitPlayerEvent(room, 'game:round', (role) => nodeView(room, result.node, role));

@@ -154,6 +154,8 @@ export function createRoom({ worldbookId, code, roomCodeLen = 8 }) {
     openingStatus: 'idle',
     nextRoundNode: null,
     nextRoundPromise: null,
+    generationProgress: null,
+    tokenUsage: { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, lastContextTokens: 0 },
     nextRoundStatus: 'idle',
     history: [],
     processing: false,
@@ -371,6 +373,7 @@ export function loadActiveRooms() {
         nextRoundNode: null,
         nextRoundPromise: null,
         processing: false,
+        tokenUsage: data.tokenUsage || { requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, lastContextTokens: 0 },
         // 进程重启后所有 Socket 都已断开，应从本次启动重新计算离线超时。
         offSince: {
           A: data.players?.A ? Date.now() : null,
@@ -506,6 +509,8 @@ export function publicRoomView(room) {
       } : null,
     },
     worldbookId: room.worldbookId,
+    generationProgress: room.generationProgress || null,
+    tokenUsage: room.tokenUsage || null,
     openingStatus: room.openingStatus,
     currentNode: room.currentNode ? {
       round: room.round,
@@ -521,12 +526,14 @@ export function publicRoomView(room) {
 }
 
 /** 两名玩家到齐后后台生成开场；开始按钮复用同一个 Promise，避免重复调用 AI。 */
-export function preloadOpening(room, config, charCard) {
+export function preloadOpening(room, config, charCard, onGenerationProgress) {
   if (room.status !== 'waiting') return Promise.resolve(room.openingNode);
   if (room.openingNode) return Promise.resolve(room.openingNode);
   if (room.openingPromise) return room.openingPromise;
   room.openingStatus = 'loading';
-  room.openingPromise = generateNode(room, config, charCard, { kind: 'intro', history: room.history })
+  room.openingPromise = generateNode(room, config, charCard, {
+    kind: 'intro', progressKind: 'opening', history: room.history, onGenerationProgress,
+  })
     .then((node) => {
       if (room.status === 'waiting') {
         room.openingNode = node;
@@ -543,11 +550,11 @@ export function preloadOpening(room, config, charCard) {
 }
 
 /** 房主开始：生成开场节点（含 intro 信息），进入 intro 阶段 */
-export async function startRoom(room, config, charCard) {
+export async function startRoom(room, config, charCard, onGenerationProgress) {
   if (room.status !== 'waiting' || room.processing) return null;
   room.processing = true;
   try {
-    const node = room.openingNode || await preloadOpening(room, config, charCard);
+    const node = room.openingNode || await preloadOpening(room, config, charCard, onGenerationProgress);
     if (room.status !== 'waiting' || !node) return null;
     room.openingNode = null;
     room.openingStatus = 'used';
@@ -567,7 +574,7 @@ export async function startRoom(room, config, charCard) {
 }
 
 /** 双方提交后：生成本回合反馈（summary），进入 summary 阶段（或直接结束） */
-export async function advanceRoom(room, config, charCard) {
+export async function advanceRoom(room, config, charCard, onGenerationProgress) {
   if (room.status !== 'playing' || room.processing) return null;
   if (!room.submitted.A || !room.submitted.B) return null;
   room.processing = true;
@@ -589,7 +596,7 @@ export async function advanceRoom(room, config, charCard) {
       kind: 'summary',
       history: nextHistory,
       choiceA: room.chosen.A,
-      choiceB: room.chosen.B,
+      choiceB: room.chosen.B, onGenerationProgress,
     });
     room.history = nextHistory;
     room.progress = Math.max(room.progress, node.progress);
@@ -625,7 +632,7 @@ export async function advanceRoom(room, config, charCard) {
     }
     room.phase = 'summary';
     saveActiveRoom(room);
-    preloadNextRound(room, config, charCard);
+    preloadNextRound(room, config, charCard, onGenerationProgress);
     return {
       type: 'summary',
       summary: node.summary,
@@ -647,7 +654,7 @@ export function confirmNext(room, role) {
 }
 
 /** 反馈页出现后立即后台生成下一轮；玩家是否点击“下一步”不影响预加载。 */
-export function preloadNextRound(room, config, charCard) {
+export function preloadNextRound(room, config, charCard, onGenerationProgress) {
   if (room.status !== 'playing' || room.phase !== 'summary') return Promise.resolve(room.nextRoundNode);
   if (room.nextRoundNode) return Promise.resolve(room.nextRoundNode);
   if (room.nextRoundPromise) return room.nextRoundPromise;
@@ -657,6 +664,8 @@ export function preloadNextRound(room, config, charCard) {
     kind: 'round',
     history: [...room.history],
     summary: room.currentSummary?.summary,
+    progressKind: 'preload',
+    onGenerationProgress,
   }).then((node) => {
     if (room.status === 'playing' && room.phase === 'summary' && room.round === sourceRound) {
       room.nextRoundNode = node;
@@ -672,7 +681,7 @@ export function preloadNextRound(room, config, charCard) {
 }
 
 /** 双方确认后推进：intro → 首轮 round；summary → 生成下一轮 round */
-export async function proceedNext(room, config, charCard) {
+export async function proceedNext(room, config, charCard, onGenerationProgress) {
   if (room.status !== 'playing' || room.processing) return null;
   room.processing = true;
   try {
@@ -680,6 +689,7 @@ export async function proceedNext(room, config, charCard) {
       if (!room.players.A?.profileReady || !room.players.B?.profileReady) return null;
       const node = await generateNode(room, config, charCard, {
         kind: 'round', history: [], summary: '两位玩家已完成角色塑造，故事现在正式开始。',
+        onGenerationProgress,
       });
       if (!node) return null;
       room.currentNode = node;
@@ -691,7 +701,7 @@ export async function proceedNext(room, config, charCard) {
       return { type: 'round', node };
     }
     if (room.phase === 'summary') {
-      const node = room.nextRoundNode || await preloadNextRound(room, config, charCard);
+      const node = room.nextRoundNode || await preloadNextRound(room, config, charCard, onGenerationProgress);
       if (!node) return null;
       room.nextRoundNode = null;
       room.nextRoundStatus = 'used';
@@ -710,7 +720,49 @@ export async function proceedNext(room, config, charCard) {
   }
 }
 
-async function generateNode(room, config, charCard, { kind, history, choiceA, choiceB, summary }) {
+const GENERATION_SECTIONS = {
+  intro: ['intro', 'narrative', 'choices_A', 'choices_B', 'story_state'],
+  round: ['narrative', 'choices_A', 'choices_B', 'story_state'],
+  summary: ['summary', 'story_state', 'ending'],
+};
+
+async function generateNode(room, config, charCard, {
+  kind, progressKind, history, choiceA, choiceB, summary, onGenerationProgress,
+}) {
+  const startedAt = Date.now();
+  const sectionKeys = GENERATION_SECTIONS[kind] || GENERATION_SECTIONS.round;
+  const recordedUsageAttempts = new Set();
+  let latestCompletedFields = [];
+  const report = (detail) => {
+    const attempt = Number(detail.attempt) || 1;
+    if (Array.isArray(detail.completedFields)) latestCompletedFields = detail.completedFields;
+    if (detail.usage && !recordedUsageAttempts.has(attempt)) {
+      recordedUsageAttempts.add(attempt);
+      const usage = room.tokenUsage ||= {
+        requests: 0, totalTokens: 0, promptTokens: 0, completionTokens: 0,
+        cacheHitTokens: 0, cacheMissTokens: 0, lastContextTokens: 0,
+      };
+      const promptTokens = Number(detail.usage.prompt_tokens) || 0;
+      const completionTokens = Number(detail.usage.completion_tokens) || 0;
+      usage.requests += 1;
+      usage.promptTokens += promptTokens;
+      usage.completionTokens += completionTokens;
+      usage.totalTokens += Number(detail.usage.total_tokens) || promptTokens + completionTokens;
+      usage.cacheHitTokens += Number(detail.usage.prompt_cache_hit_tokens) || 0;
+      usage.cacheMissTokens += Number(detail.usage.prompt_cache_miss_tokens) || 0;
+      usage.lastContextTokens = promptTokens;
+    }
+    const payload = {
+      kind: progressKind || kind,
+      startedAt,
+      totalSections: sectionKeys.length,
+      tokenUsage: room.tokenUsage,
+      ...detail,
+    };
+    room.generationProgress = payload;
+    onGenerationProgress?.(payload);
+  };
+  report({ phase: 'queued', attempt: 1, contentChars: 0, reasoningChars: 0, completedFields: [] });
   const scanDepth = Number.isInteger(room.worldbook.scan_depth)
     ? Math.max(0, room.worldbook.scan_depth)
     : Math.max(0, Number(config.game.scanDepth) || 0);
@@ -756,6 +808,9 @@ async function generateNode(room, config, charCard, { kind, history, choiceA, ch
   const generationDeadline = Date.now() + generationBudgetMs;
   const initialMaxTokens = Math.min(4096, Math.max(1024, Number(config.ai.maxTokens) || 2048));
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) {
+      report({ phase: 'retrying', attempt: attempt + 1, contentChars: 0, reasoningChars: 0, completedFields: [] });
+    }
     try {
       raw = await callAI(
         config,
@@ -766,13 +821,18 @@ async function generateNode(room, config, charCard, { kind, history, choiceA, ch
         {
           maxTokens: attempt > 0 ? 8192 : initialMaxTokens,
           timeoutMs: Math.max(1000, generationDeadline - Date.now()),
+          jsonMode: true,
+          sectionKeys,
+          onProgress: (detail) => report({ ...detail, attempt: attempt + 1 }),
         }
       );
     } catch (e) {
       console.warn('[LLM] 调用失败：', e.message);
+      report({ phase: 'failed', attempt: attempt + 1, message: e.message });
       raw = null;
       break;
     }
+    report({ phase: 'validating', attempt: attempt + 1, contentChars: raw?.length || 0, completedFields: latestCompletedFields });
     parsed = raw ? parseGameReply(raw) : null;
     if (parsed) break;
     if (attempt === 0 && raw) {
@@ -781,6 +841,7 @@ async function generateNode(room, config, charCard, { kind, history, choiceA, ch
   }
   if (raw && !parsed) console.warn('[LLM] 重试后仍解析失败，降级为演示叙事');
   if (!raw) console.warn('[LLM] 无返回（可能超时或接口异常），kind=' + kind);
+  if (!parsed) report({ phase: 'fallback', contentChars: raw?.length || 0, completedFields: [] });
   const node = normalizeNode(parsed, {
     intro: kind === 'intro' ? {
       world: `${room.worldbook.description || room.worldbook.name || '一个等待书写的世界。'}\n\n命运的齿轮已经转动，两位冒险者即将在这里共同写下故事。`,
@@ -796,5 +857,6 @@ async function generateNode(room, config, charCard, { kind, history, choiceA, ch
   node.story_state = organizeStoryState(node.story_state, room.players);
   if (!parsed) node.progress = Math.min(1, room.progress + 0.25);
   else node.progress = Math.max(room.progress, node.progress);
+  if (parsed) report({ phase: 'completed', contentChars: raw.length, completedFields: latestCompletedFields });
   return node;
 }
