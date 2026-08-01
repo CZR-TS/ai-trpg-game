@@ -248,13 +248,30 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 双方确认「下一步 / 开始冒险」：都确认后推进到下一阶段
+  // 开场角色塑造：身份昵称只用于重连，剧情昵称与资料用于后续叙事。
+  socket.on('game:profile', (payload, ack) => {
+    const room = roomSocket(socket);
+    const role = socket.data.role;
+    if (!room || !role) return ack?.({ ok: false, error: '未加入房间' });
+    try {
+      const profile = game.updatePlayerProfile(room, role, payload || {});
+      emitRoomState(room);
+      io.to(room.id).emit('game:profile_update', { role, profile });
+      ack?.({ ok: true, profile });
+    } catch (error) {
+      ack?.({ ok: false, error: errorMessage(error) });
+    }
+  });
+
   socket.on('game:next', async (payload, ack) => {
     const room = roomSocket(socket);
     const role = socket.data.role;
     if (!room || room.status !== 'playing') return ack?.({ ok: false, error: '游戏未进行中' });
     if (room.phase !== 'intro' && room.phase !== 'summary') {
       return ack?.({ ok: false, error: '当前阶段不能确认' });
+    }
+    if (room.phase === 'intro' && (!room.players.A?.profileReady || !room.players.B?.profileReady)) {
+      return ack?.({ ok: false, error: '双方都保存角色资料后才能开始冒险' });
     }
     if (room.nextConfirm[role]) return ack?.({ ok: false, error: '已确认，等待对方' });
     const bothReady = game.confirmNext(room, role);
@@ -308,7 +325,7 @@ io.on('connection', (socket) => {
     room.phase = 'ended';
     room.ending = {
       title: '本局结束',
-      text: `${me?.name || '玩家 ' + role} 在对方离线后结束了本局。故事止于此，但仍完整保存。`,
+      text: `${game.playerDisplayName(me) || '玩家 ' + role} 在对方离线后结束了本局。故事止于此，但仍完整保存。`,
     };
     game.saveRoomHistory(room);
     game.removeActiveRoom(room.id);
@@ -355,7 +372,7 @@ function summaryView(room, viewerRole) {
     progress: room.progress,
     choiceA: s.choiceA ?? null,
     choiceB: s.choiceB ?? null,
-    playerNames: { A: room.players.A?.name || '玩家 A', B: room.players.B?.name || '玩家 B' },
+    playerNames: { A: game.playerDisplayName(room.players.A) || '玩家 A', B: game.playerDisplayName(room.players.B) || '玩家 B' },
     preloadStatus: room.nextRoundStatus,
     confirmed: { A: !!room.nextConfirm.A, B: !!room.nextConfirm.B },
   };
@@ -379,7 +396,7 @@ function startOfflineTimeoutScan() {
       room.phase = 'ended';
       room.ending = {
         title: '本局结束（离线超时）',
-        text: `玩家 ${room.players[offlineRole]?.name || '（离线者）'} 离线超过 30 分钟，本局自动存档结束。`,
+        text: `玩家 ${game.playerDisplayName(room.players[offlineRole]) || '（离线者）'} 离线超过 30 分钟，本局自动存档结束。`,
       };
       game.saveRoomHistory(room);
       game.removeActiveRoom(room.id);

@@ -131,6 +131,40 @@ const main = async () => {
   const premature = await emitAck(playerA, 'game:choice', { choiceId: '继续前行' });
   check('开场确认前不能提前提交', premature.ok === false);
 
+  const profileGate = await emitAck(playerA, 'game:next');
+  check('双方完成角色资料前不能开始冒险', profileGate.ok === false);
+  const invalidProfile = await emitAck(playerA, 'game:profile', {
+    displayName: 'x'.repeat(33),
+  });
+  check('超长剧情昵称被拒绝', invalidProfile.ok === false);
+  const profileA = await emitAck(playerA, 'game:profile', {
+    displayName: '星岚', gender: '女', personality: '沉着果断', details: '擅长辨认古老文字',
+  });
+  const profileStatePromise = waitForWhere(playerA, 'room:state', ({ room: state }) =>
+    state.players.A?.name === '星岚' && state.players.B?.name === '烬川'
+  );
+  const profileB = await emitAck(playerB, 'game:profile', {
+    displayName: '烬川', gender: '男', personality: '谨慎敏锐', details: '随身携带破损罗盘',
+  });
+  const profileState = await profileStatePromise;
+  check('双方可保存剧情昵称与角色资料',
+    profileA.ok && profileB.ok
+      && profileState.room.players.A.profile?.personality === '沉着果断'
+      && profileState.room.players.B.profileReady === true);
+
+  const profileDisconnectPromise = waitFor(playerA, 'player:disconnected');
+  playerB.close();
+  await profileDisconnectPromise;
+  playerB = await connectClient();
+  const profileResumeIntro = waitFor(playerB, 'game:intro');
+  const profileResumeState = waitForWhere(playerB, 'room:state', ({ room: state }) => state.players.B?.name === '烬川');
+  const profileReconnect = await emitAck(playerB, 'room:join', { roomCode: room.code, name: '阿乙' });
+  await profileResumeIntro;
+  const resumedProfileState = await profileResumeState;
+  check('改剧情昵称后仍用原入场昵称重连且资料不丢失',
+    profileReconnect.ok && profileReconnect.reconnected === true
+      && resumedProfileState.room.players.B.profile?.details === '随身携带破损罗盘');
+
   const nextA = await emitAck(playerA, 'game:next');
   const firstRoundPromise = waitFor(playerA, 'game:round');
   const nextB = await emitAck(playerB, 'game:next');

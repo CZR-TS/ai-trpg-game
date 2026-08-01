@@ -1,7 +1,7 @@
 import express from 'express';
 import {
   listWorldbooks, importWorldbook, createRoom, rooms, getWorldbook,
-  archiveCurrentRound, listRoomHistory, saveRoomHistory, removeActiveRoom, roomHistoryStorage, deleteRoomHistory,
+  archiveCurrentRound, listRoomHistory, saveRoomHistory, removeActiveRoom, roomHistoryStorage, deleteRoomHistory, playerDisplayName,
 } from './game.js';
 import { config, saveConfig } from './config.js';
 
@@ -54,8 +54,8 @@ export function createAdminRouter() {
       progress: r.progress,
       worldbookId: r.worldbookId,
       players: {
-        A: r.players.A ? { name: r.players.A.name, ready: r.players.A.ready } : null,
-        B: r.players.B ? { name: r.players.B.name, ready: r.players.B.ready } : null,
+        A: r.players.A ? { name: playerDisplayName(r.players.A), ready: r.players.A.ready } : null,
+        B: r.players.B ? { name: playerDisplayName(r.players.B), ready: r.players.B.ready } : null,
       },
       createdAt: r.createdAt,
     }));
@@ -71,7 +71,7 @@ export function createAdminRouter() {
         status: r.status,
         worldbookId: r.worldbookId,
         players: ['A', 'B']
-          .map((role) => (r.players[role] && r.players[role].sockId ? { role, name: r.players[role].name } : null))
+          .map((role) => (r.players[role] && r.players[role].sockId ? { role, name: playerDisplayName(r.players[role]) } : null))
           .filter(Boolean),
       }))
       .filter((r) => r.players.length > 0);
@@ -104,8 +104,8 @@ export function createAdminRouter() {
       storyState: room.storyState,
       currentNode: room.currentNode,
       players: {
-        A: room.players.A ? { name: room.players.A.name, ready: room.players.A.ready } : null,
-        B: room.players.B ? { name: room.players.B.name, ready: room.players.B.ready } : null,
+        A: room.players.A ? { name: playerDisplayName(room.players.A), ready: room.players.A.ready } : null,
+        B: room.players.B ? { name: playerDisplayName(room.players.B), ready: room.players.B.ready } : null,
       },
       history: room.history,
       ending: room.ending,

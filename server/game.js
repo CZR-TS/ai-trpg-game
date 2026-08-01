@@ -164,6 +164,42 @@ export function createRoom({ worldbookId, code, roomCodeLen = 8 }) {
   return room;
 }
 
+
+export function playerDisplayName(player) {
+  return player?.displayName || player?.name || null;
+}
+
+export function updatePlayerProfile(room, role, input = {}) {
+  if (!room || room.status !== 'playing' || room.phase !== 'intro') throw new Error('当前不能修改角色资料');
+  const player = room.players[role];
+  if (!player) throw new Error('玩家不存在');
+  if (room.nextConfirm?.[role]) throw new Error('已经确认开始，不能再修改角色资料');
+  const displayName = typeof input.displayName === 'string' ? input.displayName.trim() : '';
+  const gender = typeof input.gender === 'string' ? input.gender.trim() : '';
+  const personality = typeof input.personality === 'string' ? input.personality.trim() : '';
+  const details = typeof input.details === 'string' ? input.details.trim() : '';
+  if (!displayName || displayName.length > 32) throw new Error('剧情昵称长度必须为 1-32');
+  if (gender.length > 20) throw new Error('性别描述不能超过 20 字');
+  if (personality.length > 120) throw new Error('性格描述不能超过 120 字');
+  if (details.length > 300) throw new Error('补充设定不能超过 300 字');
+  const otherRole = role === 'A' ? 'B' : 'A';
+  if (playerDisplayName(room.players[otherRole]) === displayName) throw new Error('剧情昵称不能与对方相同');
+  player.displayName = displayName;
+  player.profile = { gender, personality, details };
+  player.profileReady = true;
+  const current = room.storyState?.[role] && typeof room.storyState[role] === 'object' ? { ...room.storyState[role] } : {};
+  delete current['性别'];
+  delete current['性格'];
+  delete current['个人设定'];
+  current.name = displayName;
+  if (gender) current['性别'] = gender;
+  if (personality) current['性格'] = personality;
+  if (details) current['个人设定'] = details;
+  room.storyState = { ...(room.storyState || {}), [role]: current };
+  room.nextConfirm[role] = false;
+  saveActiveRoom(room);
+  return { displayName, profile: player.profile, profileReady: true };
+}
 export function findRoomByCode(code) {
   const c = String(code || '').trim().toUpperCase();
   return [...rooms.values()].find((r) => r.code === c && r.status !== 'ended');
@@ -186,7 +222,14 @@ export function joinRoom(code, name) {
   if (room.status !== 'waiting') throw new Error('游戏已开始，请使用原玩家昵称重连');
   const role = !room.players.A ? 'A' : !room.players.B ? 'B' : null;
   if (!role) throw new Error('房间已满');
-  room.players[role] = { name: safeName, ready: false, sockId: null };
+  room.players[role] = {
+    name: safeName,
+    displayName: safeName,
+    profile: { gender: '', personality: '', details: '' },
+    profileReady: false,
+    ready: false,
+    sockId: null,
+  };
   return { room, role, reconnected: false };
 }
 
@@ -198,7 +241,11 @@ export function saveRoomHistory(room) {
       id: room.id,
       code: room.code,
       worldbookId: room.worldbookId,
-      players: { A: room.players.A?.name ?? null, B: room.players.B?.name ?? null },
+      players: { A: playerDisplayName(room.players.A), B: playerDisplayName(room.players.B) },
+      playerProfiles: {
+        A: room.players.A?.profile || null,
+        B: room.players.B?.profile || null,
+      },
       round: room.round,
       progress: room.progress,
       history: room.history.map((item) => ({
@@ -246,8 +293,14 @@ export function saveActiveRoom(room) {
       status: room.status,
       phase: room.phase,
       players: {
-        A: room.players.A ? { name: room.players.A.name, ready: room.players.A.ready } : null,
-        B: room.players.B ? { name: room.players.B.name, ready: room.players.B.ready } : null,
+        A: room.players.A ? {
+          name: room.players.A.name, displayName: playerDisplayName(room.players.A), profile: room.players.A.profile,
+          profileReady: !!room.players.A.profileReady, ready: room.players.A.ready,
+        } : null,
+        B: room.players.B ? {
+          name: room.players.B.name, displayName: playerDisplayName(room.players.B), profile: room.players.B.profile,
+          profileReady: !!room.players.B.profileReady, ready: room.players.B.ready,
+        } : null,
       },
       round: room.round,
       progress: room.progress,
@@ -299,8 +352,16 @@ export function loadActiveRooms() {
         ...data,
         worldbook,
         players: {
-          A: data.players?.A ? { ...data.players.A, sockId: null } : null,
-          B: data.players?.B ? { ...data.players.B, sockId: null } : null,
+          A: data.players?.A ? {
+            ...data.players.A, displayName: data.players.A.displayName || data.players.A.name,
+            profile: data.players.A.profile || { gender: '', personality: '', details: '' },
+            profileReady: !!data.players.A.profileReady, sockId: null,
+          } : null,
+          B: data.players?.B ? {
+            ...data.players.B, displayName: data.players.B.displayName || data.players.B.name,
+            profile: data.players.B.profile || { gender: '', personality: '', details: '' },
+            profileReady: !!data.players.B.profileReady, sockId: null,
+          } : null,
         },
         openingNode: null,
         openingPromise: null,
@@ -387,8 +448,8 @@ export function organizeStoryState(storyState, players = {}) {
       delete b[key];
     }
   }
-  a.name = players.A?.name || a.name || '玩家 A';
-  b.name = players.B?.name || b.name || '玩家 B';
+  a.name = playerDisplayName(players.A) || a.name || '玩家 A';
+  b.name = playerDisplayName(players.B) || b.name || '玩家 B';
   return { ...source, A: a, B: b, shared };
 }
 
@@ -430,8 +491,16 @@ export function publicRoomView(room) {
     round: room.round,
     progress: room.progress,
     players: {
-      A: room.players.A ? { name: room.players.A.name, ready: room.players.A.ready, online: !!room.players.A.sockId } : null,
-      B: room.players.B ? { name: room.players.B.name, ready: room.players.B.ready, online: !!room.players.B.sockId } : null,
+      A: room.players.A ? {
+        name: playerDisplayName(room.players.A), ready: room.players.A.ready, online: !!room.players.A.sockId,
+        profile: room.players.A.profile || { gender: '', personality: '', details: '' },
+        profileReady: !!room.players.A.profileReady,
+      } : null,
+      B: room.players.B ? {
+        name: playerDisplayName(room.players.B), ready: room.players.B.ready, online: !!room.players.B.sockId,
+        profile: room.players.B.profile || { gender: '', personality: '', details: '' },
+        profileReady: !!room.players.B.profileReady,
+      } : null,
     },
     worldbookId: room.worldbookId,
     openingStatus: room.openingStatus,
@@ -481,8 +550,8 @@ export async function startRoom(room, config, charCard) {
     room.openingStatus = 'used';
     room.currentNode = node;
     room.round = 1;
-    room.progress = node.progress;
-    room.storyState = node.story_state;
+    room.progress = 0;
+    room.storyState = organizeStoryState(node.story_state, room.players);
     room.phase = 'intro';
     room.nextConfirm = { A: false, B: false };
     room.status = 'playing';
@@ -604,10 +673,18 @@ export async function proceedNext(room, config, charCard) {
   room.processing = true;
   try {
     if (room.phase === 'intro') {
+      if (!room.players.A?.profileReady || !room.players.B?.profileReady) return null;
+      const node = await generateNode(room, config, charCard, {
+        kind: 'round', history: [], summary: '两位玩家已完成角色塑造，故事现在正式开始。',
+      });
+      if (!node) return null;
+      room.currentNode = node;
+      room.storyState = node.story_state;
+      room.progress = node.progress;
       room.phase = 'round';
       room.nextConfirm = { A: false, B: false };
       saveActiveRoom(room);
-      return { type: 'round', node: room.currentNode };
+      return { type: 'round', node };
     }
     if (room.phase === 'summary') {
       const node = room.nextRoundNode || await preloadNextRound(room, config, charCard);
@@ -659,7 +736,7 @@ async function generateNode(room, config, charCard, { kind, history, choiceA, ch
   const system = buildSystemPrompt(charCard);
   const user = [
     loreText,
-    `【玩家身份】玩家A真实昵称：${room.players.A?.name || '玩家A'}；玩家B真实昵称：${room.players.B?.name || '玩家B'}。必须始终使用这两个昵称。`,
+    `【玩家角色资料】\n玩家A：${JSON.stringify({ name: playerDisplayName(room.players.A) || '玩家A', ...(room.players.A?.profile || {}) })}\n玩家B：${JSON.stringify({ name: playerDisplayName(room.players.B) || '玩家B', ...(room.players.B?.profile || {}) })}\n叙事、选项和状态栏必须使用剧情昵称，并结合性别、性格与补充设定塑造角色。`,
     '【剧情历史】\n' + buildHistoryText(history, config.game.historyRounds),
     '【当前结构化状态】\n' + JSON.stringify(room.storyState || {}),
     `【当前进度】${Math.round(room.progress * 100)}%`,

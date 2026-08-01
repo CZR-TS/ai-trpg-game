@@ -14,7 +14,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css?v=20260801-11">
+  <link rel="stylesheet" href="css/style.css?v=20260801-14">
 </head>
 <body>
   <!-- 顶部导航 -->
@@ -155,10 +155,17 @@
             <span class="label">昵称</span>
             <div class="input-wrap">
               <i data-lucide="user"></i>
-              <input id="inp-name" type="text" placeholder="你的称呼" maxlength="12" autocomplete="off">
+              <input id="inp-name" type="text" placeholder="你的称呼" maxlength="12" autocomplete="off" aria-describedby="identity-name-hint">
             </div>
           </label>
           <p id="join-error" class="field-error" hidden></p>
+          <p id="identity-name-hint" class="identity-hint">
+            <i data-lucide="info"></i>
+            <span class="identity-hint-copy">
+              <span>入场昵称尽量独特，避免与他人重复。</span>
+              <span>重连时仍用此昵称；它与剧情昵称不同。</span>
+            </span>
+          </p>
           <button type="submit" class="btn btn-primary btn-block">
             <span>进入</span><i data-lucide="arrow-right"></i>
           </button>
@@ -217,8 +224,8 @@
   <script src="vendor/socket.io.min.js"></script>
   <!-- 应用脚本（非 ES module，file:// 可直接打开） -->
   <script src="js/worldbook-data.js"></script>
-  <script src="js/client.js?v=20260801-11"></script>
-  <script src="js/ui.js?v=20260801-11"></script>
-  <script src="js/app.js?v=20260801-11"></script>
+  <script src="js/client.js?v=20260801-14"></script>
+  <script src="js/ui.js?v=20260801-14"></script>
+  <script src="js/app.js?v=20260801-14"></script>
 </body>
 </html>

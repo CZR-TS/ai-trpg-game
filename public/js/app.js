@@ -838,19 +838,85 @@
   function renderIntroPage(intro) {
     clearGameAreas();
     const na = $('narrative-area');
+    const meRole = state.me?.role;
+    const oppRole = OPP(meRole);
+    const me = state.room?.players?.[meRole];
+    const opp = state.room?.players?.[oppRole];
+    const profile = me?.profile || { gender: '', personality: '', details: '' };
     na.className = 'info-page';
     na.appendChild(UI.el('div', { class: 'info-page-head' }, [
-      UI.icon('scroll-text'),
-      UI.el('h2', { text: '世界背景' }),
+      UI.icon('scroll-text'), UI.el('h2', { text: '世界背景' }),
     ]));
     na.appendChild(UI.el('div', { class: 'info-block' }, [
       UI.el('p', { class: 'info-world', text: (intro && intro.world) || '（开场信息生成中…）' }),
     ]));
-    na.appendChild(UI.el('div', { class: 'info-roles' }, [
-      UI.el('div', { class: 'info-role-card' }, [UI.icon('user'), UI.el('b', { text: state.room?.players?.A?.name || '玩家 A' }), UI.el('p', { text: (intro && intro.roleA) || '' })]),
-      UI.el('div', { class: 'info-role-card' }, [UI.icon('user'), UI.el('b', { text: state.room?.players?.B?.name || '玩家 B' }), UI.el('p', { text: (intro && intro.roleB) || '' })]),
+
+    const form = UI.el('form', {
+      class: 'profile-form',
+      onsubmit: async (event) => {
+        event.preventDefault();
+        const displayName = $('profile-name').value.trim();
+        const res = await client.saveProfile({
+          displayName,
+          gender: $('profile-gender').value.trim(),
+          personality: $('profile-personality').value.trim(),
+          details: $('profile-details').value.trim(),
+        });
+        if (!res || !res.ok) {
+          UI.toast((res && res.error) || '角色资料保存失败');
+          return;
+        }
+        UI.toast(me?.profileReady ? '角色资料已更新' : '角色资料已保存');
+      },
+    });
+    form.appendChild(UI.el('div', { class: 'profile-form-head' }, [
+      UI.icon('user-round-pen'),
+      UI.el('div', null, [
+        UI.el('h3', { text: '塑造你的角色' }),
+      ]),
+      me?.profileReady ? UI.el('span', { class: 'profile-ready', text: '已保存' }) : null,
     ]));
-    renderNextButton('开始冒险', 'flag');
+    form.appendChild(profileInput('剧情昵称', 'profile-name', me?.name || state.me?.name || '', 32, '故事中显示的名字', true));
+    form.appendChild(profileInput('性别（选填）', 'profile-gender', profile.gender || '', 20, '可自由填写，例如：女、男、非二元、未设定'));
+    form.appendChild(profileTextarea('性格（选填）', 'profile-personality', profile.personality || '', 120, '例如：外冷内热，面对危险时异常冷静'));
+    form.appendChild(profileTextarea('补充设定（选填）', 'profile-details', profile.details || '', 300, '希望 AI 知道的身份、经历、外貌或习惯'));
+    form.appendChild(UI.el('button', { class: 'btn btn-ghost btn-block', type: 'submit' }, [
+      UI.icon('save'), UI.el('span', { text: me?.profileReady ? '更新角色资料' : '保存角色资料' }),
+    ]));
+    na.appendChild(form);
+
+    const oppCard = UI.el('div', { class: 'profile-peer' }, [
+      UI.el('div', { class: 'profile-peer-head' }, [
+        UI.icon(opp?.profileReady ? 'user-check' : 'user-round'),
+        UI.el('b', { text: opp?.profileReady ? opp.name : `玩家 ${oppRole}` }),
+        UI.el('span', { text: opp?.profileReady ? '角色已就绪' : '正在塑造角色…' }),
+      ]),
+    ]);
+    if (opp?.profileReady) {
+      const parts = [opp.profile?.gender, opp.profile?.personality, opp.profile?.details].filter(Boolean);
+      oppCard.appendChild(UI.el('p', { text: parts.length ? parts.join(' · ') : '未填写额外资料' }));
+    }
+    na.appendChild(oppCard);
+
+    const allReady = !!(state.room?.players?.A?.profileReady && state.room?.players?.B?.profileReady);
+    renderNextButton('开始冒险', 'flag', {
+      disabled: !allReady,
+      disabledText: me?.profileReady ? '等待对方完成角色资料…' : '请先保存角色资料',
+    });
+  }
+
+  function profileInput(label, id, value, maxLength, placeholder, required = false) {
+    return UI.el('label', { class: 'profile-field' }, [
+      UI.el('span', { text: label }),
+      UI.el('input', { id, value, maxlength: maxLength, placeholder, required }),
+    ]);
+  }
+
+  function profileTextarea(label, id, value, maxLength, placeholder) {
+    return UI.el('label', { class: 'profile-field' }, [
+      UI.el('span', { text: label }),
+      UI.el('textarea', { id, maxlength: maxLength, placeholder, rows: 3 }, [value]),
+    ]);
   }
 
   // ---- 回合反馈页：本回合结果 + 双方选择揭晓 + 下一步 ----
@@ -891,22 +957,29 @@
   }
 
   // 双方确认按钮（intro / summary 共用）
-  function renderNextButton(label, iconName) {
+  function renderNextButton(label, iconName, options = {}) {
     const bar = $('action-bar');
     UI.clear(bar);
     const g = state.game;
     const meConfirmed = g.next.me;
     const oppConfirmed = g.next.opp;
-    const btnText = meConfirmed
+    const btnText = options.disabled
+      ? options.disabledText
+      : meConfirmed
       ? (oppConfirmed ? '双方已确认，正在继续…' : '已确认，等待对方…')
       : label;
     bar.appendChild(UI.el('button', {
       class: 'btn btn-primary btn-block', type: 'button',
-      disabled: meConfirmed,
+      disabled: meConfirmed || !!options.disabled,
       onclick: async () => {
         g.next.me = true;
         render();
-        await client.next();
+        const res = await client.next();
+        if (!res || !res.ok) {
+          g.next.me = false;
+          UI.toast((res && res.error) || '继续失败，请重试');
+          render();
+        }
       },
     }, [UI.icon(meConfirmed ? 'loader' : iconName, meConfirmed ? 'icon-spin' : null), UI.el('span', { text: btnText })]));
   }

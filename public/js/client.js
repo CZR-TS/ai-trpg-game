@@ -58,6 +58,7 @@ class GameClient {
   async submitChoice(choiceId) {}        // emit game:choice {choiceId}
   async advance() {}                     // emit game:advance
   async next() {}                        // emit game:next（双方确认「开始冒险 / 下一步」）
+  async saveProfile(payload) {}          // emit game:profile（开场角色塑造）
   async abandon() {}                     // emit game:abandon（对方离线时结束本局）
   async leave() {}                       // emit room:leave，主动离开当前房间
 }
@@ -200,7 +201,11 @@ class MockClient extends GameClient {
     if (!room.players.A) role = 'A';
     else if (!room.players.B) role = 'B';
     else return { ok: false, error: '房间已满' };
-    room.players[role] = { name, ready: false };
+    room.players[role] = {
+      name, displayName: name,
+      profile: { gender: '', personality: '', details: '' },
+      profileReady: false, ready: false,
+    };
     this.me = { role, name };
     this.currentRoomId = room.id;
     this.bus.emit('room:state', { room: this._publicRoom(room) });
@@ -245,6 +250,33 @@ class MockClient extends GameClient {
     this.bus.emit('game:started', { code: room.code });
     this.bus.emit('game:intro', this._introPayload(room, node));
     return { ok: true };
+  }
+
+  async saveProfile(payload = {}) {
+    await delay(180);
+    const room = this._myRoom();
+    if (!room || !this.me || room.status !== 'playing' || room.phase !== 'intro') {
+      return { ok: false, error: '当前不能修改角色资料' };
+    }
+    if (room.nextConfirm?.[this.me.role]) return { ok: false, error: '已经确认开始，不能再修改角色资料' };
+    const displayName = String(payload.displayName || '').trim();
+    const gender = String(payload.gender || '').trim();
+    const personality = String(payload.personality || '').trim();
+    const details = String(payload.details || '').trim();
+    if (!displayName || displayName.length > 32) return { ok: false, error: '剧情昵称长度必须为 1-32' };
+    const player = room.players[this.me.role];
+    player.displayName = displayName;
+    player.profile = { gender, personality, details };
+    player.profileReady = true;
+    room.storyState[this.me.role] = {
+      ...room.storyState[this.me.role], name: displayName,
+      ...(gender ? { 性别: gender } : {}),
+      ...(personality ? { 性格: personality } : {}),
+      ...(details ? { 个人设定: details } : {}),
+    };
+    this.bus.emit('room:state', { room: this._publicRoom(room) });
+    this.bus.emit('game:profile_update', { role: this.me.role, profile: player.profile });
+    return { ok: true, profile: { displayName, profile: player.profile, profileReady: true } };
   }
 
   async submitChoice(choiceId) {
@@ -342,6 +374,9 @@ class MockClient extends GameClient {
     const room = this._myRoom();
     if (!room || !this.me) return { ok: false };
     if (room.phase !== 'intro' && room.phase !== 'summary') return { ok: false, error: '当前阶段不能确认' };
+    if (room.phase === 'intro' && !(room.players.A?.profileReady && room.players.B?.profileReady)) {
+      return { ok: false, error: '请等待双方完成角色资料' };
+    }
     if (room.nextConfirm[this.me.role]) return { ok: false, error: '已确认，等待对方' };
     room.nextConfirm[this.me.role] = true;
     this.bus.emit('game:next_update', { role: this.me.role, confirmed: true });
@@ -363,6 +398,7 @@ class MockClient extends GameClient {
   async _tryProceed(room) {
     if (!(room.nextConfirm.A && room.nextConfirm.B)) return;
     if (room.phase === 'intro') {
+      room.currentNode = this._buildNode(room, 'round');
       room.phase = 'round';
       this.bus.emit('room:state', { room: this._publicRoom(room) });
       this.bus.emit('game:round', this._nodePayload(room.currentNode));
@@ -428,7 +464,12 @@ class MockClient extends GameClient {
     setTimeout(() => {
       if (room.players.B || room.status !== 'lobby') return;
       const botNames = ['灰袍旅人', '影行者', '无名客', '夜枭'];
-      room.players.B = { name: pick(botNames), ready: false };
+      const botName = pick(botNames);
+      room.players.B = {
+        name: botName, displayName: botName,
+        profile: { gender: '', personality: '沉着而警觉', details: '一位与玩家同行的旅人' },
+        profileReady: true, ready: false,
+      };
       this.bus.emit('player:joined', { role: 'B', name: room.players.B.name });
       setTimeout(() => {
         if (!room.players.B || room.status !== 'lobby') return;
@@ -483,8 +524,8 @@ class MockClient extends GameClient {
   // intro 背景信息：世界观简介 + 双方角色介绍（模拟 AI 开场生成）
   _buildIntro(room) {
     const wb = this.worldbooks.find(w => w.id === room.worldbookId) || this.worldbooks[0];
-    const aName = room.players.A ? room.players.A.name : '玩家A';
-    const bName = room.players.B ? room.players.B.name : '玩家B';
+    const aName = room.players.A ? (room.players.A.displayName || room.players.A.name) : '玩家A';
+    const bName = room.players.B ? (room.players.B.displayName || room.players.B.name) : '玩家B';
     return {
       world: '《' + (wb.name || '命运之书') + '》：' +
         (wb.description || '这片大陆被遗忘的传说重新苏醒，黑暗的阴影正缓缓蔓延。两位被命运选中的旅人，将在未知的旅途中写下自己的故事——他们的每一个选择，都将成为历史的一页。'),
@@ -495,8 +536,8 @@ class MockClient extends GameClient {
 
   // 本回合结果反馈（模拟 AI 总结，无预设规则）
   _buildSummary(room) {
-    const aName = (room.players.A && room.players.A.name) || '玩家A';
-    const bName = (room.players.B && room.players.B.name) || '玩家B';
+    const aName = (room.players.A && (room.players.A.displayName || room.players.A.name)) || '玩家A';
+    const bName = (room.players.B && (room.players.B.displayName || room.players.B.name)) || '玩家B';
     const ca = room.choices.A || '静观其变';
     const cb = room.choices.B || '静观其变';
     return '（演示模式）本回合落幕：' + aName + '的「' + ca + '」与' + bName + '的「' + cb + '」交织出新的涟漪，局势悄然生变，命运的丝线随之颤动。';
@@ -565,7 +606,7 @@ class SocketClient extends GameClient {
     this.socket = window.io(this.baseUrl, { withCredentials: true });
     const events = [
       'room:state', 'player:joined', 'player:reconnected', 'player:disconnected',
-      'player:ready', 'game:started', 'game:starting', 'game:intro', 'game:round', 'game:choice_update',
+      'player:ready', 'game:started', 'game:starting', 'game:intro', 'game:profile_update', 'game:round', 'game:choice_update',
       'game:summary', 'game:next_update', 'game:preload_status', 'game:judging', 'game:ended',
     ];
     events.forEach((event) => this.socket.on(event, (payload) => this.bus.emit(event, payload)));
@@ -636,7 +677,8 @@ class SocketClient extends GameClient {
   startGame() { return this._emitAck('game:start', {}, 70000); }
   submitChoice(choiceId) { return this._emitAck('game:choice', { choiceId }); }
   advance() { return this._emitAck('game:advance'); }
-  next() { return this._emitAck('game:next'); }
+  saveProfile(payload) { return this._emitAck('game:profile', payload); }
+  next() { return this._emitAck('game:next', {}, 70000); }
   abandon() { return this._emitAck('game:abandon'); }
   async leave() {
     if (!this.socket || !this.lastJoin) return { ok: true, reconnectable: false };

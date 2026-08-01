@@ -22,7 +22,7 @@ room.players.A = { name: 'A', ready: true, token: 'a', sockId: null };
 room.players.B = { name: 'B', ready: true, token: 'b', sockId: null };
 const opening = await game.startRoom(room, config, character);
 assert.equal(room.status, 'playing');
-assert.equal(opening.progress, 0.25);
+assert.equal(room.progress, 0, '角色塑造阶段不应提前增加故事进度');
 assert.ok(opening.choices_A.length && opening.choices_B.length);
 
 room.chosen = { A: opening.choices_A[0], B: opening.choices_B[0] };
@@ -57,11 +57,30 @@ const introRoom = game.createRoom({ worldbookId: 'fantasy-example' });
 introRoom.players.A = { name: '确认甲', ready: true, sockId: null };
 introRoom.players.B = { name: '确认乙', ready: true, sockId: null };
 await game.startRoom(introRoom, config, character);
+const profileA = game.updatePlayerProfile(introRoom, 'A', {
+  displayName: '星岚', gender: '女', personality: '沉着果断', details: '擅长辨认古老文字',
+});
+game.updatePlayerProfile(introRoom, 'B', {
+  displayName: '烬川', gender: '男', personality: '谨慎敏锐', details: '随身携带破损罗盘',
+});
+assert.equal(profileA.displayName, '星岚', '角色塑造应允许设置剧情昵称');
+assert.equal(introRoom.players.A.name, '确认甲', '修改剧情昵称不能覆盖用于重连的身份昵称');
+assert.equal(game.publicRoomView(introRoom).players.A.name, '星岚', '玩家视图应展示剧情昵称');
+const reclaimed = game.joinRoom(introRoom.code, '确认甲');
+assert.equal(reclaimed.role, 'A', '改名后仍应使用原入场昵称认领离线席位');
+assert.equal(reclaimed.reconnected, true, '原身份昵称必须保持可重连');
+assert.throws(() => game.joinRoom(introRoom.code, '星岚'), /原玩家昵称/, '剧情昵称不能替代身份昵称重连');
+assert.throws(() => game.updatePlayerProfile(introRoom, 'B', { displayName: '星岚' }), /不能与对方相同/);
+
 assert.equal(game.confirmNext(introRoom, 'A'), false);
 let activeSnapshot = JSON.parse(await readFile(
   path.resolve('data/room-active', introRoom.id + '.json'), 'utf8'
 ));
 assert.equal(activeSnapshot.nextConfirm.A, true, '单方确认必须立即写入进行中存档');
+assert.equal(activeSnapshot.players.A.name, '确认甲', '进行中存档必须保留身份昵称');
+assert.equal(activeSnapshot.players.A.displayName, '星岚', '进行中存档必须保留剧情昵称');
+assert.equal(activeSnapshot.players.A.profile.personality, '沉着果断', '进行中存档必须保留角色资料');
+assert.equal(activeSnapshot.players.A.profileReady, true, '进行中存档必须记录角色资料完成状态');
 game.confirmNext(introRoom, 'B');
 await game.proceedNext(introRoom, config, character);
 activeSnapshot = JSON.parse(await readFile(
@@ -140,7 +159,12 @@ assert.match(pageCss, /:root\[data-theme='dark'\]/, '样式表必须包含暗色
 assert.match(pageCss, /\.topbar-actions\s*\{/, '顶部操作区必须为品牌和主题按钮预留布局');
 assert.match(pageApp, /localStorage\.setItem\(THEME_KEY, next\)/, '主题选择必须写入本地存储');
 assert.match(pageApp, /dark \? 'sun' : 'moon'/, '主题按钮必须使用 Lucide 的太阳/月亮图标');
-assert.match(pageHtml, /style\.css\?v=20260801-11/, '主题样式更新后必须刷新静态资源版本');
+assert.match(pageHtml, /style\.css\?v=20260801-14/, '角色塑造更新后必须刷新静态资源版本');
+assert.match(pageHtml, /入场昵称尽量独特[\s\S]*重连时仍用此昵称[\s\S]*剧情昵称不同/, '玩家入口必须用两行短句解释身份昵称');
+assert.match(pageCss, /\.offline-banner\[hidden\]\s*\{\s*display:\s*none/, '未离线时不得显示空的警告横幅');
+assert.match(pageApp, /async \(event\)[\s\S]*client\.saveProfile/, '开场页必须提供角色资料保存交互');
+assert.doesNotMatch(pageApp, /入场昵称只用于身份重连/, '角色塑造卡片不应重复显示身份昵称说明');
+assert.match(pageCss, /\.profile-form\s*\{/, '角色塑造表单必须有独立布局');
 assert.doesNotMatch(pageApp, /action === 'goto-(?:admin|player)'[\s\S]{0,120}leaveCurrentRoom/, '顶部工作区切换不能离开玩家房间');
 assert.match(pageApp, /WORKSPACE_KEY = 'trpg_workspace_v1'/, '当前工作区必须本地记忆');
 assert.match(pageApp, /管理员登录态与玩家房间态分别恢复/, '刷新时必须分别恢复两个工作区');
