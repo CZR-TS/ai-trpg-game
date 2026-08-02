@@ -422,6 +422,12 @@
     }
     render();
   });
+  client.on('game:advance_started', () => {
+    state.turn.advancing = true;
+    state.turn.advanceFailed = false;
+    beginGeneration('summary');
+    render();
+  });
   client.on('game:advance_failed', () => {
     state.turn.advancing = false;
     state.turn.advanceFailed = true;

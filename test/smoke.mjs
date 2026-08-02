@@ -217,8 +217,13 @@ const main = async () => {
     check(`第${current.round}回合合法提交且禁止重复`, choiceA.ok && choiceB.ok && repeated.ok === false);
     const outcomePromise = waitForOutcome(playerA);
     const preloadStatusPromise = guard === 0 ? waitFor(playerA, 'game:preload_status') : null;
+    const advanceStartedPromise = guard === 0 ? waitFor(playerB, 'game:advance_started') : null;
     const advance = await emitAck(playerA, 'game:advance');
     check(`第${current.round}回合推进`, advance.ok);
+    if (advanceStartedPromise) {
+      await advanceStartedPromise;
+      check('任意一方开始结算后双方立即同步正在推进状态', true);
+    }
     const outcome = await outcomePromise;
     if (outcome.type === 'ended') {
       ending = outcome.data;

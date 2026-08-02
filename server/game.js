@@ -806,9 +806,11 @@ async function generateNode(room, config, charCard, {
   const sectionKeys = GENERATION_SECTIONS[kind] || GENERATION_SECTIONS.round;
   const recordedUsageAttempts = new Set();
   let latestCompletedFields = [];
+  let latestFinishReason = null;
   const report = (detail) => {
     const attempt = Number(detail.attempt) || 1;
     if (Array.isArray(detail.completedFields)) latestCompletedFields = detail.completedFields;
+    if (detail.finishReason) latestFinishReason = detail.finishReason;
     if (detail.usage && !recordedUsageAttempts.has(attempt)) {
       recordedUsageAttempts.add(attempt);
       const usage = room.tokenUsage ||= emptyTokenUsage();
@@ -882,40 +884,42 @@ async function generateNode(room, config, charCard, {
   // 调用 + 容错：网络失败、超时或结构无效时，总共尝试三次。
   let raw = null;
   let parsed = null;
-  const generationBudgetMs = Math.max(5000, Number(config.ai.timeoutMs) || 60000);
-  const generationDeadline = Date.now() + generationBudgetMs;
-  const initialMaxTokens = Math.min(4096, Math.max(1024, Number(config.ai.maxTokens) || 2048));
+  // 思考模式可能需要较长时间；每次尝试至少保留两分钟，避免本地过早中止仍在正常生成的官方请求。
+  const attemptTimeoutMs = Math.max(120000, Number(config.ai.timeoutMs) || 60000);
+  const initialMaxTokens = Math.min(8192, Math.max(2048, Number(config.ai.maxTokens) || 2048));
+  const attemptMaxTokens = [initialMaxTokens, Math.max(initialMaxTokens, 16384), Math.max(initialMaxTokens, 32768)];
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt > 0) {
       report({ phase: 'retrying', attempt: attempt + 1, contentChars: 0, reasoningChars: 0, completedFields: [] });
     }
     try {
-      raw = await callAI(
+      const attemptRaw = await callAI(
         config,
         [
           { role: 'system', content: system },
           { role: 'user', content: user },
         ],
         {
-          maxTokens: attempt > 0 ? 8192 : initialMaxTokens,
-          timeoutMs: Math.max(1000, generationDeadline - Date.now()),
+          maxTokens: attemptMaxTokens[attempt],
+          // 每次重试都有完整超时时间；不能让首轮生成耗尽后续重试的预算。
+          timeoutMs: attemptTimeoutMs,
           jsonMode: true,
           sectionKeys,
           onProgress: (detail) => report({ ...detail, attempt: attempt + 1 }),
         }
       );
+      if (attemptRaw) raw = attemptRaw;
     } catch (e) {
       console.warn('[LLM] 调用失败：', e.message);
-      raw = null;
       if (attempt < 2) continue;
       report({ phase: 'failed', attempt: attempt + 1, message: e.message });
       break;
     }
-    report({ phase: 'validating', attempt: attempt + 1, contentChars: raw?.length || 0, completedFields: latestCompletedFields });
+    report({ phase: 'validating', attempt: attempt + 1, contentChars: raw?.length || 0, completedFields: latestCompletedFields, finishReason: latestFinishReason });
     parsed = raw ? parseGameReply(raw) : null;
     if (parsed) break;
     if (attempt < 2 && raw) {
-      console.warn('[LLM] 解析失败（可能输出被截断），以更大上限重试，RAW前200字：', raw.slice(0, 200));
+      console.warn(`[LLM] 解析失败（finish_reason=${latestFinishReason || 'unknown'}），以更大上限重试，RAW前200字：`, raw.slice(0, 200));
     }
   }
   if (raw && !parsed) console.warn('[LLM] 重试后仍解析失败');

@@ -266,6 +266,10 @@ io.on('connection', (socket) => {
     const room = roomSocket(socket);
     if (!room || room.status !== 'playing') return ack?.({ ok: false, error: '游戏未进行中' });
     if (room.phase !== 'round') return ack?.({ ok: false, error: '当前阶段不能推进' });
+    if (room.processing) return ack?.({ ok: false, error: 'DM 正在推进剧情' });
+    if (!room.submitted.A || !room.submitted.B) return ack?.({ ok: false, error: '双方都提交选择后才能推进' });
+    // 重试由任意一方发起，但双方必须立即进入同一个“正在结算”状态并移除旧按钮。
+    io.to(room.id).emit('game:advance_started');
     try {
       const result = await game.advanceRoom(room, config, characterFor(room), generationEmitter(room));
       if (!result) {

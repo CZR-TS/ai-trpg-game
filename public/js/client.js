@@ -340,6 +340,7 @@ class MockClient extends GameClient {
     if (room.status !== 'playing' || room.phase !== 'round') return { ok: false, error: '游戏未在进行中' };
     if (!(room.submitted.A && room.submitted.B)) return { ok: false, error: '等待双方提交' };
     room._advancing = true;
+    this.bus.emit('game:advance_started');
 
     // 归档本回合（含双方选择，供结局回顾使用）
     room.history.push({
@@ -625,7 +626,7 @@ class SocketClient extends GameClient {
     const events = [
       'room:state', 'player:joined', 'player:reconnected', 'player:disconnected',
       'player:ready', 'game:started', 'game:starting', 'game:intro', 'game:profile_update', 'game:round', 'game:choice_update',
-      'game:summary', 'game:next_update', 'game:preload_status', 'game:generation_progress', 'game:advance_failed', 'game:judging', 'game:ended',
+      'game:summary', 'game:next_update', 'game:preload_status', 'game:generation_progress', 'game:advance_started', 'game:advance_failed', 'game:judging', 'game:ended',
       'chat:history', 'chat:message',
     ];
     events.forEach((event) => this.socket.on(event, (payload) => this.bus.emit(event, payload)));
@@ -716,12 +717,13 @@ class SocketClient extends GameClient {
   }
 
   setReady() { return this._emitAck('room:ready'); }
-  startGame() { return this._emitAck('game:start', {}, 70000); }
+  startGame() { return this._emitAck('game:start', {}, 390000); }
   submitChoice(choiceId) { return this._emitAck('game:choice', { choiceId }); }
-  advance() { return this._emitAck('game:advance'); }
+  // 服务端可能进行三次完整的思考与结构化重试；前端不能在 15 秒时把正常生成误判为失败。
+  advance() { return this._emitAck('game:advance', {}, 390000); }
   saveProfile(payload) { return this._emitAck('game:profile', payload); }
   sendChat(text) { return this._emitAck('chat:send', { text }); }
-  next() { return this._emitAck('game:next', {}, 70000); }
+  next() { return this._emitAck('game:next', {}, 390000); }
   abandon() { return this._emitAck('game:abandon'); }
   async leave() {
     if (!this.socket || !this.lastJoin) return { ok: true, reconnectable: false };

@@ -3,7 +3,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import * as game from '../server/game.js';
 import { activateEntries, loadWorldbookFile } from '../server/lorebook.js';
-import { buildHistoryText, buildSystemPrompt, callAI, completedJsonFields, normalizeNarrativeText, normalizeNode } from '../server/llm.js';
+import { buildHistoryText, buildSystemPrompt, callAI, completedJsonFields, normalizeNarrativeText, normalizeNode, parseGameReply } from '../server/llm.js';
 import { buildStoryMarkdown, storyExportFilename } from '../server/story-export.js';
 
 const config = {
@@ -169,6 +169,8 @@ try {
   assert.equal(streamedRequestBody.stream, true, 'DeepSeek 请求必须启用 SSE 流式返回');
   assert.deepEqual(streamedRequestBody.stream_options, { include_usage: true }, '流式请求必须要求最终 usage');
   assert.deepEqual(streamedRequestBody.response_format, { type: 'json_object' }, '游戏生成必须启用 JSON 输出模式');
+  assert.deepEqual(streamedRequestBody.thinking, { type: 'enabled' }, '剧情生成必须明确启用 DeepSeek 思考模式');
+  assert.equal(streamedRequestBody.reasoning_effort, 'high', '剧情生成必须使用高强度因果推演');
   assert.ok(streamProgress.some((item) => item.phase === 'thinking' && item.reasoningChars > 0), '必须真实报告模型推演状态');
   assert.ok(streamProgress.some((item) => item.phase === 'receiving' && item.contentChars > 0), '必须真实报告已接收字符数');
   assert.ok(streamProgress.some((item) => item.completedFields?.length === 4), '必须真实报告完整结构项数量');
@@ -203,6 +205,11 @@ assert.equal(failedFetches, 3, '真实 AI 调用失败时应自动尝试三次')
 assert.equal(aiFailureRoom.phase, 'intro', '重试失败后必须停留在原阶段，不能写入演示回合');
 assert.equal(aiFailureRoom.progress, 0, '重试失败后不得增加故事进度');
 assert.equal(aiFailureRoom.generationProgress, null, '失败任务不得残留为房间当前生成状态');
+assert.equal(
+  parseGameReply('{"narrative":"他说"沿山路走"。","choices_A":[],"choices_B":[],"story_state":{}}')?.narrative,
+  '他说"沿山路走"。',
+  'JSON 容错必须能修复正文中的裸英文引号，不能破坏合法闭合引号'
+);
 assert.deepEqual(normalized.story_state, { flag: true });
 assert.match(buildHistoryText([{ round: 1, narrative: 'n', choiceA: 'a', choiceB: 'b', storyState: { hp: 9 } }], 6), /"hp":9/);
 assert.equal(
@@ -219,6 +226,8 @@ assert.equal(
 );
 assert.match(buildSystemPrompt(character), /仅用 \*\*重点文字\*\*/, 'AI 提示词必须要求少量 Markdown 粗体');
 assert.match(buildSystemPrompt(character), /转义换行符 \\n\\n 分段/, 'AI 提示词必须要求自然分段');
+assert.match(buildSystemPrompt(character), /合理性与连续性｜最高优先级/, 'AI 提示词必须把身份、能力与因果合理性放在剧情推进之前');
+assert.doesNotMatch(buildSystemPrompt(character), /null或|\/\/仅|\{\.\.\.\}/, 'JSON 输出示例本身必须是合法 JSON，不能用伪语法误导模型');
 assert.match(buildSystemPrompt(character), /玩家正文与内部状态边界/, '提示词必须明确隔离玩家正文与系统内部状态');
 assert.match(buildSystemPrompt(character), /禁止在正文中使用系统总结口吻宣布/, '玩家正文不得直接展示关系、目标或进度等系统结论');
 assert.match(buildSystemPrompt(character), /narrative 通常写 3-5 个自然段、约 450-800 个中文字符/, '每回合叙事必须提供更充分的信息量');
@@ -315,6 +324,7 @@ assert.match(worldbookTemplate.opening_background, /4-6 个自然段[\s\S]*普�
 const dmCharacterTemplate = JSON.parse(await readFile(path.resolve('worldbook/dm_character.template.json'), 'utf8'));
 assert.match(dmCharacterTemplate.system_prompt, /narrative通常写3-5个自然段[\s\S]*summary通常写3-4个自然段/, 'DM模板必须继承统一的回合信息量要求');
 assert.match(dmCharacterTemplate.system_prompt, /只写角色能够看到[\s\S]*story_state\/shared\/flags/, 'DM模板必须继承玩家正文与后台状态边界');
+assert.match(dmCharacterTemplate.system_prompt, /合理性、身份一致和因果连续[\s\S]*不得临时编造能力、关系、物品、情报或权限/, 'DM模板必须让后续世界书继承合理性优先规则');
 
 const pageHtml = await readFile(path.resolve('public/index.html'), 'utf8');
 const pageCss = await readFile(path.resolve('public/css/style.css'), 'utf8');
@@ -331,7 +341,7 @@ assert.match(pageCss, /:root\[data-theme='dark'\]/, '样式表必须包含暗色
 assert.match(pageCss, /\.topbar-actions\s*\{/, '顶部操作区必须为品牌和主题按钮预留布局');
 assert.match(pageApp, /localStorage\.setItem\(THEME_KEY, next\)/, '主题选择必须写入本地存储');
 assert.match(pageApp, /dark \? 'sun' : 'moon'/, '主题按钮必须使用 Lucide 的太阳/月亮图标');
-assert.match(pageHtml, /style\.css\?v=20260801-24/, '本轮界面更新后必须刷新静态资源版本');
+assert.match(pageHtml, /style\.css\?v=20260802-25/, '本轮界面更新后必须刷新静态资源版本');
 assert.match(pageHtml, /入场昵称尽量独特[\s\S]*重连时仍用此昵称[\s\S]*剧情昵称不同/, '玩家入口必须用两行短句解释身份昵称');
 assert.match(pageCss, /\.offline-banner\[hidden\]\s*\{\s*display:\s*none/, '未离线时不得显示空的警告横幅');
 assert.match(pageApp, /async \(event\)[\s\S]*client\.saveProfile/, '开场页必须提供角色资料保存交互');
@@ -363,6 +373,9 @@ assert.doesNotMatch(pageApp, /缓存命中|缓存率/, '三项数据旁不得增
 assert.match(pageApp, /function tokenUsageNode[\s\S]*?\r?\n  \}\r?\n\r?\n  function legacyCopy/, 'Token 统计组件必须位于可被各玩家视图调用的作用域');
 assert.match(pageApp, /if \(res\.room\) state\.room = res\.room/, '加入成功后必须立即采用响应中的房间状态');
 assert.match(pageClient, /game:generation_progress/, 'Socket 客户端必须转发真实生成事件');
+assert.match(pageClient, /advance\(\) \{ return this\._emitAck\('game:advance', \{\}, 390000\); \}/, '结算等待时间必须覆盖服务端完整思考与重试，不能在 15 秒时误报失败');
+assert.match(socketServer, /emit\('game:advance_started'\)/, '任意玩家重新结算时服务端必须立即同步双方状态');
+assert.match(pageApp, /client\.on\('game:advance_started'[\s\S]*advanceFailed = false[\s\S]*render\(\)/, '重新结算开始后双方都必须移除旧按钮并刷新操作栏');
 assert.match(pageApp, /generationLoader\('summary'\)/, '回合结算必须显示生成进度');
 assert.match(pageCss, /\.dm-generation-glow\s*\{[\s\S]*dm-soft-glow/, 'DM 生成组件必须使用柔和且不旋转的动效');
 assert.match(pageCss, /prefers-reduced-motion:\s*reduce/, '加载动画必须尊重减少动态效果设置');
@@ -372,6 +385,7 @@ assert.match(pageApp, /GENERATION_HINTS[\s\S]*检查下一幕与前文是否连�
 assert.doesNotMatch(pageApp, /下一回合已就绪[\s\S]*正在为双方切换到新场景/, '反馈页与操作栏不能再生成重复的下一回合状态框');
 assert.match(pageApp, /g\.phase !== 'summary'\) bar\.appendChild\(generationLoader\('round'/, '反馈页双方确认后不得追加第二张生成卡');
 assert.match(pageHtml, /id="player-chat"[\s\S]*id="player-chat-form"/, '正式玩家页必须包含聊天胶囊与输入框');
+assert.match(pageCss, /\.player-chat-capsule\s*\{[\s\S]*color:\s*var\(--fg\);[\s\S]*background:\s*var\(--surface\);/, '聊天胶囊必须跟随单色主题层级，不能整块反转为纯黑或纯白');
 assert.match(pageClient, /sendChat\(text\).*chat:send/s, '客户端必须通过独立 chat:send 事件发送聊天');
 const chatMessageHandler = pageApp.slice(pageApp.indexOf("client.on('chat:message'"), pageApp.indexOf("client.on('player:joined'"));
 assert.match(chatMessageHandler, /appendChatMessage\(message\)/, '聊天到达时必须只追加聊天消息');
