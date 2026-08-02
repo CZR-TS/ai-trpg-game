@@ -190,6 +190,7 @@ export function createRoom({ worldbookId, code, roomCodeLen = 8 }) {
     nextRoundStatus: 'idle',
     history: [],
     chatMessages: [],
+    chatReadAt: { A: 0, B: 0 },
     processing: false,
     ending: null,
     offSince: { A: null, B: null },
@@ -280,14 +281,16 @@ export function appendRoomChat(room, role, input) {
   if (Array.from(text).length > CHAT_MESSAGE_MAX_LENGTH) {
     throw new Error(`消息不能超过 ${CHAT_MESSAGE_MAX_LENGTH} 字`);
   }
+  const history = Array.isArray(room.chatMessages) ? room.chatMessages : [];
+  const previousCreatedAt = Number(history.at(-1)?.createdAt) || 0;
   const message = {
     id: crypto.randomUUID(),
     role,
     senderName: playerDisplayName(room.players[role]) || `玩家 ${role}`,
     text,
-    createdAt: Date.now(),
+    // 已读游标使用消息时间戳，因此同一毫秒内连续发送时也必须保持严格递增。
+    createdAt: Math.max(Date.now(), previousCreatedAt + 1),
   };
-  const history = Array.isArray(room.chatMessages) ? room.chatMessages : [];
   room.chatMessages = [...history, message].slice(-CHAT_ROOM_MAX_MESSAGES);
   if (room.status === 'playing') saveActiveRoom(room);
   return message;
@@ -298,8 +301,31 @@ export function roomChatHistory(room) {
   return (Array.isArray(room.chatMessages) ? room.chatMessages : []).map((message) => ({ ...message }));
 }
 
+export function roomChatReadState(room) {
+  return {
+    A: Math.max(0, Number(room?.chatReadAt?.A) || 0),
+    B: Math.max(0, Number(room?.chatReadAt?.B) || 0),
+  };
+}
+
+/** 将该玩家的已读游标推进到最新一条对方消息；返回新的服务端游标。 */
+export function markRoomChatRead(room, role) {
+  if (!room || room.status === 'ended') throw new Error('房间已结束');
+  if (!room.players?.[role]) throw new Error('玩家不存在');
+  const latestIncoming = (Array.isArray(room.chatMessages) ? room.chatMessages : [])
+    .findLast((message) => message.role !== role);
+  const current = Math.max(0, Number(room.chatReadAt?.[role]) || 0);
+  const readAt = Math.max(current, Number(latestIncoming?.createdAt) || 0);
+  room.chatReadAt = { ...roomChatReadState(room), [role]: readAt };
+  if (readAt !== current && room.status === 'playing') saveActiveRoom(room);
+  return readAt;
+}
+
 export function clearRoomChat(room) {
-  if (room) room.chatMessages = [];
+  if (room) {
+    room.chatMessages = [];
+    room.chatReadAt = { A: 0, B: 0 };
+  }
 }
 
 /** 保存房间历史到磁盘（结束/关闭时调用，服务重启不丢失） */
@@ -386,6 +412,7 @@ export function saveActiveRoom(room) {
       tokenUsage: room.tokenUsage,
       history: room.history,
       chatMessages: room.chatMessages,
+      chatReadAt: roomChatReadState(room),
       ending: room.ending,
       offSince: room.offSince,
       createdAt: room.createdAt,
@@ -442,6 +469,10 @@ export function loadActiveRooms() {
         nextRoundPromise: null,
         processing: false,
         chatMessages: (Array.isArray(data.chatMessages) ? data.chatMessages : []).slice(-CHAT_ROOM_MAX_MESSAGES),
+        chatReadAt: {
+          A: Math.max(0, Number(data.chatReadAt?.A) || 0),
+          B: Math.max(0, Number(data.chatReadAt?.B) || 0),
+        },
         tokenUsage: { ...emptyTokenUsage(), ...(data.tokenUsage || {}), contextWindowTokens: MODEL_CONTEXT_WINDOW_TOKENS },
         // 进程重启后所有 Socket 都已断开，应从本次启动重新计算离线超时。
         offSince: {

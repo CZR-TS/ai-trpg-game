@@ -61,6 +61,7 @@ class GameClient {
   async next() {}                        // emit game:next（双方确认「开始冒险 / 下一步」）
   async saveProfile(payload) {}          // emit game:profile（开场角色塑造）
   async sendChat(text) {}                // emit chat:send（房间内纯文字聊天）
+  async markChatRead() {}                // emit chat:read（推进当前玩家的已读游标）
   async abandon() {}                     // emit game:abandon（对方离线时结束本局）
   async leave() {}                       // emit room:leave，主动离开当前房间
 }
@@ -153,6 +154,7 @@ class MockClient extends GameClient {
       choices: { A: null, B: null },
       history: [],
       chatMessages: [],
+      chatReadAt: { A: 0, B: 0 },
       ending: null,
       createdAt: Date.now(),
     };
@@ -203,6 +205,7 @@ class MockClient extends GameClient {
     if (!room) return { ok: false, error: '房间不存在', status: 404 };
     room.status = 'ended';
     room.chatMessages = [];
+    room.chatReadAt = { A: 0, B: 0 };
     return { ok: true };
   }
 
@@ -228,7 +231,7 @@ class MockClient extends GameClient {
     this.bus.emit('player:joined', { role, name });
     // mock：若我是 A，则延时自动让 B（AI 扮演的另一名玩家）加入并准备
     if (role === 'A') this._scheduleBotJoin(room);
-    return { ok: true, roomId: room.id, role, chatMessages: room.chatMessages || [] };
+    return { ok: true, roomId: room.id, role, chatMessages: room.chatMessages || [], chatReadAt: room.chatReadAt || { A: 0, B: 0 } };
   }
 
   async setReady() {
@@ -333,6 +336,16 @@ class MockClient extends GameClient {
     return { ok: true, messageId: message.id };
   }
 
+  async markChatRead() {
+    const room = this._myRoom();
+    if (!room || !this.me || room.status !== 'playing') return { ok: false, error: '游戏未进行中' };
+    const latestIncoming = (room.chatMessages || []).findLast((message) => message.role !== this.me.role);
+    const readAt = Math.max(Number(room.chatReadAt?.[this.me.role]) || 0, Number(latestIncoming?.createdAt) || 0);
+    room.chatReadAt = { ...(room.chatReadAt || { A: 0, B: 0 }), [this.me.role]: readAt };
+    this.bus.emit('chat:read', { role: this.me.role, readAt });
+    return { ok: true, readAt };
+  }
+
   // 双方都提交后由前端「AI 推进」触发：生成本回合反馈，进入 summary 阶段
   async advance() {
     const room = this._myRoom();
@@ -377,6 +390,7 @@ class MockClient extends GameClient {
     room.status = 'ended';
     room.phase = 'ended';
     room.chatMessages = [];
+    room.chatReadAt = { A: 0, B: 0 };
     room.ending = { title: '本局结束', text: `${this.me.name} 结束了本局。` };
     this.bus.emit('room:state', { room: this._publicRoom(room) });
     this.bus.emit('game:ended', { ending: this._buildEnding(room), progress: 1 });
@@ -627,7 +641,7 @@ class SocketClient extends GameClient {
       'room:state', 'player:joined', 'player:reconnected', 'player:disconnected',
       'player:ready', 'game:started', 'game:starting', 'game:intro', 'game:profile_update', 'game:round', 'game:choice_update',
       'game:summary', 'game:next_update', 'game:preload_status', 'game:generation_progress', 'game:advance_started', 'game:advance_failed', 'game:judging', 'game:ended',
-      'chat:history', 'chat:message',
+      'chat:history', 'chat:message', 'chat:read',
     ];
     events.forEach((event) => this.socket.on(event, (payload) => this.bus.emit(event, payload)));
     this.socket.on('disconnect', () => {
@@ -723,6 +737,7 @@ class SocketClient extends GameClient {
   advance() { return this._emitAck('game:advance', {}, 390000); }
   saveProfile(payload) { return this._emitAck('game:profile', payload); }
   sendChat(text) { return this._emitAck('chat:send', { text }); }
+  markChatRead() { return this._emitAck('chat:read'); }
   next() { return this._emitAck('game:next', {}, 390000); }
   abandon() { return this._emitAck('game:abandon'); }
   async leave() {

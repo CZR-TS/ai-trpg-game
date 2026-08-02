@@ -87,7 +87,10 @@ function emitRoomState(room) {
 }
 
 function emitChatHistory(socket, room) {
-  socket.emit('chat:history', { messages: game.roomChatHistory(room) });
+  socket.emit('chat:history', {
+    messages: game.roomChatHistory(room),
+    readAt: game.roomChatReadState(room),
+  });
 }
 
 function generationEmitter(room) {
@@ -132,6 +135,7 @@ io.on('connection', (socket) => {
         reconnected: joined.reconnected,
         room: playerRoomView(room, role),
         chatMessages: game.roomChatHistory(room),
+        chatReadAt: game.roomChatReadState(room),
       });
       emitChatHistory(socket, room);
       io.to(room.id).emit(joined.reconnected ? 'player:reconnected' : 'player:joined', {
@@ -202,6 +206,7 @@ io.on('connection', (socket) => {
       if (!node) return ack?.({ ok: false, error: '游戏正在处理或已经开始' });
       ack?.({ ok: true });
       io.to(room.id).emit('game:started', { code: room.code });
+      emitRoomState(room);
       io.to(room.id).emit('game:intro', introView(room, node));
     } catch (error) {
       console.error('[GAME] 开局失败：', error);
@@ -228,6 +233,20 @@ io.on('connection', (socket) => {
       const message = game.appendRoomChat(room, role, payload?.text);
       io.to(room.id).emit('chat:message', { message });
       ack?.({ ok: true, messageId: message.id });
+    } catch (error) {
+      ack?.({ ok: false, error: errorMessage(error) });
+    }
+  });
+
+  socket.on('chat:read', (payload, ack) => {
+    const room = roomSocket(socket);
+    const role = socket.data.role;
+    if (!room || !role) return ack?.({ ok: false, error: '未加入房间' });
+    if (room.status !== 'playing') return ack?.({ ok: false, error: '游戏未进行中' });
+    try {
+      const readAt = game.markRoomChatRead(room, role);
+      io.to(room.id).emit('chat:read', { role, readAt });
+      ack?.({ ok: true, readAt });
     } catch (error) {
       ack?.({ ok: false, error: errorMessage(error) });
     }

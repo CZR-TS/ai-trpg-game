@@ -133,6 +133,14 @@ const main = async () => {
   check('房间聊天实时广播给双方',
     sentChat.ok && receivedByA.message?.id === receivedByB.message?.id
       && receivedByB.message?.text === '这条消息在断线重连后也要保留');
+  const readForA = waitForWhere(playerA, 'chat:read', (payload) =>
+    payload?.role === 'B' && payload.readAt >= receivedByB.message.createdAt
+  );
+  const readChat = await emitAck(playerB, 'chat:read');
+  const receivedRead = await readForA;
+  check('对方打开聊天后已读状态实时同步给发送方',
+    readChat.ok && readChat.readAt === receivedByB.message.createdAt
+      && receivedRead.readAt === receivedByB.message.createdAt);
   const tooLongChat = await emitAck(playerA, 'chat:send', { text: '字'.repeat(301) });
   check('超长聊天消息被服务端拒绝', tooLongChat.ok === false);
 
@@ -149,6 +157,9 @@ const main = async () => {
   check('玩家断线重连后恢复完整聊天记录',
     sameNameReconnect.chatMessages?.some((message) => message.text === '这条消息在断线重连后也要保留')
       && resumedChatHistory.messages?.some((message) => message.text === '这条消息在断线重连后也要保留'));
+  check('玩家断线重连后恢复双方已读位置',
+    sameNameReconnect.chatReadAt?.B === receivedByB.message.createdAt
+      && resumedChatHistory.readAt?.B === receivedByB.message.createdAt);
 
   const premature = await emitAck(playerA, 'game:choice', { choiceId: '继续前行' });
   check('开场确认前不能提前提交', premature.ok === false);

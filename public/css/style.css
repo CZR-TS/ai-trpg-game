@@ -1362,7 +1362,16 @@ body.chat-visible .game-sheet { padding-bottom: 132px; }
   color: var(--bg);
   background: var(--fg);
 }
-.player-chat-time { margin: 3px 7px 0; color: var(--muted); font-size: 9px; }
+.player-chat-meta {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 3px 7px 0;
+  color: var(--muted);
+  font-size: 9px;
+}
+.player-chat-message.is-mine .player-chat-meta { justify-content: flex-end; }
+.player-chat-receipt { font-weight: 600; }
 
 .player-chat-composer {
   display: flex;
