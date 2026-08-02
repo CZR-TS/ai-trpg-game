@@ -170,20 +170,20 @@ const main = async () => {
     displayName: 'x'.repeat(33),
   });
   check('超长剧情昵称被拒绝', invalidProfile.ok === false);
+  const profileAUpdatePromise = waitForWhere(playerA, 'game:profile_update', (payload) => payload?.role === 'A');
   const profileA = await emitAck(playerA, 'game:profile', {
     displayName: '星岚', gender: '女', personality: '沉着果断', details: '擅长辨认古老文字',
   });
-  const profileStatePromise = waitForWhere(playerA, 'room:state', ({ room: state }) =>
-    state.players.A?.name === '星岚' && state.players.B?.name === '烬川'
-  );
+  const profileAUpdate = await profileAUpdatePromise;
+  const profileBUpdatePromise = waitForWhere(playerA, 'game:profile_update', (payload) => payload?.role === 'B');
   const profileB = await emitAck(playerB, 'game:profile', {
     displayName: '烬川', gender: '男', personality: '谨慎敏锐', details: '随身携带破损罗盘',
   });
-  const profileState = await profileStatePromise;
+  const profileBUpdate = await profileBUpdatePromise;
   check('双方可保存剧情昵称与角色资料',
     profileA.ok && profileB.ok
-      && profileState.room.players.A.profile?.personality === '沉着果断'
-      && profileState.room.players.B.profileReady === true);
+      && profileAUpdate.profile?.profile?.personality === '沉着果断'
+      && profileBUpdate.profile?.profileReady === true);
 
   const profileDisconnectPromise = waitFor(playerA, 'player:disconnected');
   playerB.close();

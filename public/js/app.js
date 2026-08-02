@@ -15,6 +15,7 @@
     me: null,              // { role, name }
     game: { phase: 'intro', intro: null, summary: null, next: { me: false, opp: false }, starting: false }, // intro | round | summary | judging | ended
     turn: { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, advanceFailed: false, judging: false, customText: null },
+    profileDraft: null,
     oppOffline: false, // 对方是否离线（游戏中）
     chat: { messages: [], readAt: { A: 0, B: 0 }, open: false, sending: false, markingRead: false },
   };
@@ -77,6 +78,7 @@
     if (state.view !== name) switchView(name); else render();
   }
   function render() {
+    captureLiveDrafts();
     switch (state.view) {
       case 'admin-panel': renderAdminPanel(); break;
       case 'lobby': renderLobby(); break;
@@ -90,6 +92,42 @@
   function resetTurn() {
     state.turn = { myChoiceId: null, submitted: false, oppSubmitted: false, oppChoiceText: null, advancing: false, advanceFailed: false, judging: false, customText: null };
     typedDone = { narrative: null, summary: null };
+  }
+
+  function profileDraftKey() {
+    return state.room && state.me ? `${state.room.code}:${state.me.role}` : '';
+  }
+
+  function ensureProfileDraft() {
+    const key = profileDraftKey();
+    if (!key) return null;
+    if (state.profileDraft?.key === key) return state.profileDraft;
+    const player = state.room?.players?.[state.me.role];
+    const profile = player?.profile || {};
+    state.profileDraft = {
+      key,
+      displayName: player?.name || state.me.name || '',
+      gender: profile.gender || '',
+      personality: profile.personality || '',
+      details: profile.details || '',
+    };
+    return state.profileDraft;
+  }
+
+  function captureLiveDrafts() {
+    const profileForm = document.querySelector('.profile-form');
+    const draft = ensureProfileDraft();
+    if (profileForm && draft) {
+      const next = {
+        displayName: $('profile-name')?.value ?? draft.displayName,
+        gender: $('profile-gender')?.value ?? draft.gender,
+        personality: $('profile-personality')?.value ?? draft.personality,
+        details: $('profile-details')?.value ?? draft.details,
+      };
+      Object.assign(draft, next);
+    }
+    const customInput = $('my-choices')?.querySelector('.custom-input');
+    if (customInput && !state.turn.submitted) state.turn.customText = customInput.value;
   }
   // ============ 浏览器会话持久化（刷新/重开页面后自动恢复）============
   const SESSION_KEY = 'trpg_session_v1';
@@ -109,6 +147,7 @@
     state.room = null;
     state.me = null;
     state.oppOffline = false;
+    state.profileDraft = null;
     resetChat();
     clearSession();
     resetTurn();
@@ -394,6 +433,15 @@
   client.on('chat:history', ({ messages, readAt }) => setChatHistory(messages, readAt));
   client.on('chat:message', ({ message }) => appendChatMessage(message));
   client.on('chat:read', ({ role, readAt }) => applyChatRead(role, readAt));
+  client.on('game:profile_update', ({ role, profile }) => {
+    const player = state.room?.players?.[role];
+    if (!player || !profile) return;
+    player.name = profile.displayName || player.name;
+    player.profile = profile.profile || player.profile || {};
+    player.profileReady = !!profile.profileReady;
+    if (state.game.phase === 'intro' && $('profile-peer')) refreshIntroProfileState();
+    else if (state.view === 'game') render();
+  });
   client.on('player:joined', () => render());
   client.on('player:ready', () => render());
   client.on('game:started', () => { state.game.starting = false; });
@@ -432,6 +480,7 @@
       state.room.progress = payload.progress;
     }
     state.game.phase = 'round';
+    state.profileDraft = null;
     state.game.next = { me: false, opp: false };
     // 重连恢复：提交状态 + 自己的选择（仅本人可见），避免重复提交
     const meRole = state.me && state.me.role;
@@ -487,6 +536,12 @@
     // 只由 A 端发起推进，避免双方同时请求而出现重复结算状态。
     if (state.me?.role === 'A' && state.turn.submitted && state.turn.oppSubmitted && !state.turn.advancing && state.game.phase === 'round') {
       requestRoundAdvance();
+      return;
+    }
+    if (state.game.phase === 'round' && state.room?.currentNode) {
+      renderOppChoices();
+      renderActionBar();
+      UI.refreshIcons();
       return;
     }
     render();
@@ -1320,7 +1375,7 @@
     const oppRole = OPP(meRole);
     const me = state.room?.players?.[meRole];
     const opp = state.room?.players?.[oppRole];
-    const profile = me?.profile || { gender: '', personality: '', details: '' };
+    const draft = ensureProfileDraft();
     na.className = 'info-page';
     na.appendChild(UI.el('div', { class: 'info-page-head' }, [
       UI.icon('scroll-text'), UI.el('h2', { text: '世界背景' }),
@@ -1333,18 +1388,24 @@
       class: 'profile-form',
       onsubmit: async (event) => {
         event.preventDefault();
-        const displayName = $('profile-name').value.trim();
+        captureLiveDrafts();
+        const currentDraft = ensureProfileDraft();
+        const wasReady = !!me?.profileReady;
+        const submitted = {
+          displayName: currentDraft.displayName.trim(),
+          gender: currentDraft.gender.trim(),
+          personality: currentDraft.personality.trim(),
+          details: currentDraft.details.trim(),
+        };
+        Object.assign(currentDraft, submitted);
         const res = await client.saveProfile({
-          displayName,
-          gender: $('profile-gender').value.trim(),
-          personality: $('profile-personality').value.trim(),
-          details: $('profile-details').value.trim(),
+          ...submitted,
         });
         if (!res || !res.ok) {
           UI.toast((res && res.error) || '角色资料保存失败');
           return;
         }
-        UI.toast(me?.profileReady ? '角色资料已更新' : '角色资料已保存');
+        UI.toast(wasReady ? '角色资料已更新' : '角色资料已保存');
       },
     });
     form.appendChild(UI.el('div', { class: 'profile-form-head' }, [
@@ -1352,18 +1413,28 @@
       UI.el('div', null, [
         UI.el('h3', { text: '塑造你的角色' }),
       ]),
-      me?.profileReady ? UI.el('span', { class: 'profile-ready', text: '已保存' }) : null,
+      UI.el('span', { id: 'profile-ready-state', class: 'profile-ready', text: '已保存', hidden: !me?.profileReady }),
     ]));
-    form.appendChild(profileInput('剧情昵称', 'profile-name', me?.name || state.me?.name || '', 32, '故事中显示的名字', true));
-    form.appendChild(profileInput('性别（选填）', 'profile-gender', profile.gender || '', 20, '可自由填写，例如：女、男、非二元、未设定'));
-    form.appendChild(profileTextarea('性格（选填）', 'profile-personality', profile.personality || '', 120, '例如：外冷内热，面对危险时异常冷静'));
-    form.appendChild(profileTextarea('补充设定（选填）', 'profile-details', profile.details || '', 300, '希望 AI 知道的身份、经历、外貌或习惯'));
+    form.appendChild(profileInput('剧情昵称', 'profile-name', draft?.displayName || '', 32, '故事中显示的名字', true, 'displayName'));
+    form.appendChild(profileInput('性别（选填）', 'profile-gender', draft?.gender || '', 20, '可自由填写，例如：女、男、非二元、未设定', false, 'gender'));
+    form.appendChild(profileTextarea('性格（选填）', 'profile-personality', draft?.personality || '', 120, '例如：外冷内热，面对危险时异常冷静', 'personality'));
+    form.appendChild(profileTextarea('补充设定（选填）', 'profile-details', draft?.details || '', 300, '希望 AI 知道的身份、经历、外貌或习惯', 'details'));
     form.appendChild(UI.el('button', { class: 'btn btn-ghost btn-block', type: 'submit' }, [
-      UI.icon('save'), UI.el('span', { text: me?.profileReady ? '更新角色资料' : '保存角色资料' }),
+      UI.icon('save'), UI.el('span', { id: 'profile-submit-label', text: me?.profileReady ? '更新角色资料' : '保存角色资料' }),
     ]));
     na.appendChild(form);
 
-    const oppCard = UI.el('div', { class: 'profile-peer' }, [
+    na.appendChild(renderIntroPeerCard(opp, oppRole));
+
+    const allReady = !!(state.room?.players?.A?.profileReady && state.room?.players?.B?.profileReady);
+    renderNextButton('开始冒险', 'flag', {
+      disabled: !allReady,
+      disabledText: me?.profileReady ? '等待对方完成角色资料…' : '请先保存角色资料',
+    });
+  }
+
+  function renderIntroPeerCard(opp, oppRole) {
+    const oppCard = UI.el('div', { id: 'profile-peer', class: 'profile-peer' }, [
       UI.el('div', { class: 'profile-peer-head' }, [
         UI.icon(opp?.profileReady ? 'user-check' : 'user-round'),
         UI.el('b', { text: opp?.profileReady ? opp.name : `玩家 ${oppRole}` }),
@@ -1374,26 +1445,46 @@
       const parts = [opp.profile?.gender, opp.profile?.personality, opp.profile?.details].filter(Boolean);
       oppCard.appendChild(UI.el('p', { text: parts.length ? parts.join(' · ') : '未填写额外资料' }));
     }
-    na.appendChild(oppCard);
+    return oppCard;
+  }
 
+  function refreshIntroProfileState() {
+    const meRole = state.me?.role;
+    const oppRole = OPP(meRole);
+    const me = state.room?.players?.[meRole];
+    const opp = state.room?.players?.[oppRole];
+    const ready = $('profile-ready-state');
+    if (ready) ready.hidden = !me?.profileReady;
+    const label = $('profile-submit-label');
+    if (label) label.textContent = me?.profileReady ? '更新角色资料' : '保存角色资料';
+    const currentPeer = $('profile-peer');
+    if (currentPeer) currentPeer.replaceWith(renderIntroPeerCard(opp, oppRole));
     const allReady = !!(state.room?.players?.A?.profileReady && state.room?.players?.B?.profileReady);
     renderNextButton('开始冒险', 'flag', {
       disabled: !allReady,
       disabledText: me?.profileReady ? '等待对方完成角色资料…' : '请先保存角色资料',
     });
+    syncChatVisibility();
+    UI.refreshIcons();
   }
 
-  function profileInput(label, id, value, maxLength, placeholder, required = false) {
+  function updateProfileDraft(field, value) {
+    const draft = ensureProfileDraft();
+    if (!draft) return;
+    draft[field] = value;
+  }
+
+  function profileInput(label, id, value, maxLength, placeholder, required = false, field) {
     return UI.el('label', { class: 'profile-field' }, [
       UI.el('span', { text: label }),
-      UI.el('input', { id, value, maxlength: maxLength, placeholder, required }),
+      UI.el('input', { id, value, maxlength: maxLength, placeholder, required, oninput: (event) => updateProfileDraft(field, event.target.value) }),
     ]);
   }
 
-  function profileTextarea(label, id, value, maxLength, placeholder) {
+  function profileTextarea(label, id, value, maxLength, placeholder, field) {
     return UI.el('label', { class: 'profile-field' }, [
       UI.el('span', { text: label }),
-      UI.el('textarea', { id, maxlength: maxLength, placeholder, rows: 3 }, [value]),
+      UI.el('textarea', { id, maxlength: maxLength, placeholder, rows: 3, oninput: (event) => updateProfileDraft(field, event.target.value) }, [value]),
     ]);
   }
 

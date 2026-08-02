@@ -320,7 +320,6 @@ io.on('connection', (socket) => {
     if (!room || !role) return ack?.({ ok: false, error: '未加入房间' });
     try {
       const profile = game.updatePlayerProfile(room, role, payload || {});
-      emitRoomState(room);
       io.to(room.id).emit('game:profile_update', { role, profile });
       ack?.({ ok: true, profile });
     } catch (error) {

@@ -347,6 +347,7 @@ assert.match(pageCss, /\.topbar-actions\s*\{/, '顶部操作区必须为品牌�
 assert.match(pageApp, /localStorage\.setItem\(THEME_KEY, next\)/, '主题选择必须写入本地存储');
 assert.match(pageApp, /dark \? 'sun' : 'moon'/, '主题按钮必须使用 Lucide 的太阳/月亮图标');
 assert.match(pageHtml, /style\.css\?v=20260802-26/, '本轮界面更新后必须刷新静态资源版本');
+assert.match(pageHtml, /app\.js\?v=20260802-28/, '输入草稿修复后必须刷新应用脚本缓存版本');
 assert.match(pageHtml, /入场昵称尽量独特[\s\S]*重连时仍用此昵称[\s\S]*剧情昵称不同/, '玩家入口必须用两行短句解释身份昵称');
 assert.match(pageCss, /\.offline-banner\[hidden\]\s*\{\s*display:\s*none/, '未离线时不得显示空的警告横幅');
 assert.match(pageApp, /async \(event\)[\s\S]*client\.saveProfile/, '开场页必须提供角色资料保存交互');
@@ -393,7 +394,7 @@ assert.match(pageHtml, /id="player-chat"[\s\S]*id="player-chat-form"/, '正式�
 assert.match(pageCss, /\.player-chat-capsule\s*\{[\s\S]*color:\s*var\(--fg\);[\s\S]*background:\s*var\(--surface\);/, '聊天胶囊必须跟随单色主题层级，不能整块反转为纯黑或纯白');
 assert.match(pageClient, /sendChat\(text\).*chat:send/s, '客户端必须通过独立 chat:send 事件发送聊天');
 assert.match(pageClient, /markChatRead\(\).*chat:read/s, '客户端必须通过独立 chat:read 事件同步已读位置');
-const chatMessageHandler = pageApp.slice(pageApp.indexOf("client.on('chat:message'"), pageApp.indexOf("client.on('player:joined'"));
+const chatMessageHandler = pageApp.slice(pageApp.indexOf("client.on('chat:message'"), pageApp.indexOf("client.on('chat:read'"));
 assert.match(chatMessageHandler, /appendChatMessage\(message\)/, '聊天到达时必须只追加聊天消息');
 assert.doesNotMatch(chatMessageHandler, /render\(\)/, '聊天到达时不得触发游戏页面整体重绘');
 assert.match(pageApp, /player-chat-input[\s\S]*client\.sendChat\(text\)/, '聊天输入必须独立调用聊天发送接口');
@@ -403,6 +404,15 @@ assert.match(socketServer, /game:started[\s\S]*emitRoomState\(room\)[\s\S]*game:
 assert.match(pageApp, /document\.addEventListener\('pointerdown'[\s\S]*!dock\.contains\(event\.target\)[\s\S]*setChatOpen\(false\)/, '展开聊天后点击窗口外部必须自动收回');
 assert.match(pageApp, /function chatUnreadCount[\s\S]*message\.createdAt > readAt/, '未读数量必须按服务端已读位置计算，不能依赖易丢失的本地计数');
 assert.match(pageApp, /opponentReadAt >= message\.createdAt \? '已读' : '未读'/, '自己发送的消息必须显示对方真实的未读或已读状态');
+assert.match(pageApp, /profileDraft:[\s\S]*function captureLiveDrafts[\s\S]*updateProfileDraft/, '角色塑造输入必须保存为本地草稿，整页被动更新也不能清空');
+const profileUpdateHandler = pageApp.slice(pageApp.indexOf("client.on('game:profile_update'"), pageApp.indexOf("client.on('player:joined'"));
+assert.match(profileUpdateHandler, /refreshIntroProfileState\(\)/, '对方角色资料更新必须只刷新角色状态区域');
+assert.doesNotMatch(profileUpdateHandler, /renderIntroPage|clearGameAreas/, '角色资料事件不能重建本人的角色表单');
+const profileSocketHandler = socketServer.slice(socketServer.indexOf("socket.on('game:profile'"), socketServer.indexOf("socket.on('game:next'"));
+assert.doesNotMatch(profileSocketHandler, /emitRoomState/, '保存角色资料时不能再额外广播导致整页重绘的 room:state');
+const choiceUpdateHandler = pageApp.slice(pageApp.indexOf("client.on('game:choice_update'"), pageApp.indexOf("client.on('game:advance_started'"));
+assert.match(choiceUpdateHandler, /renderOppChoices\(\)[\s\S]*renderActionBar\(\)/, '对方提交行动时必须只刷新对方状态与操作栏');
+assert.doesNotMatch(choiceUpdateHandler, /renderMyChoices/, '对方提交行动时不能重建自己的自定义行动输入框');
 assert.match(pageApp, /state\.me\?\.role === 'A'[\s\S]*client\.advance\(\)/, '双方提交后只允许一个客户端发起推进');
 assert.match(pageApp, /value: state\.turn\.customText \|\| ''[\s\S]*oninput: \(e\) => \{ state\.turn\.customText = e\.target\.value; \}/, '输入草稿必须保存在回合状态中，不能因对方更新或自己提交被清空');
 assert.doesNotMatch(gameServer, /room\.progress\s*>=\s*1/, '后端不得按故事进度自动结束');

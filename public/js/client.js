@@ -293,9 +293,9 @@ class MockClient extends GameClient {
       ...(personality ? { 性格: personality } : {}),
       ...(details ? { 个人设定: details } : {}),
     };
-    this.bus.emit('room:state', { room: this._publicRoom(room) });
-    this.bus.emit('game:profile_update', { role: this.me.role, profile: player.profile });
-    return { ok: true, profile: { displayName, profile: player.profile, profileReady: true } };
+    const profile = { displayName, profile: player.profile, profileReady: true };
+    this.bus.emit('game:profile_update', { role: this.me.role, profile });
+    return { ok: true, profile };
   }
 
   async submitChoice(choiceId) {
